@@ -1,0 +1,327 @@
+"""zju_auth.py — 浙大统一认证 + 各服务登录
+
+翻译自 Celechron Dart 代码:
+- lib/http/zjuServices/zjuam.dart  — RSA + CAS 登录
+- lib/http/zjuServices/zdbk.dart   — ZDBK 教务网登录
+- lib/http/zjuServices/courses.dart — 学在浙大登录
+"""
+
+import re
+import httpx
+
+
+class ZjuAuth:
+    def __init__(self, timeout: float = 8.0):
+        self.timeout = timeout
+        self._iplanet: str | None = None
+        self._zdbk_cookies: dict | None = None
+        self._courses_session: str | None = None
+        self._zhiyun_jwt: str | None = None
+
+    @property
+    def is_logged_in(self) -> bool:
+        return self._iplanet is not None
+
+    @property
+    def iplanet(self) -> str | None:
+        return self._iplanet
+
+    @property
+    def zdbk_cookies(self) -> dict | None:
+        return self._zdbk_cookies
+
+    @property
+    def courses_session(self) -> str | None:
+        return self._courses_session
+
+    @property
+    def zhiyun_jwt(self) -> str | None:
+        return self._zhiyun_jwt
+
+    async def sso_login(self, username: str, password: str) -> str:
+        """统一认证登录，返回 iPlanetDirectoryPro cookie 值。
+
+        流程: GET login page → GET RSA pubkey → encrypt password → POST login
+        """
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=self.timeout,
+            verify=True,
+        ) as client:
+            # Step 1: GET login page to get execution token and cookies
+            resp = await client.get("https://zjuam.zju.edu.cn/cas/login")
+            cookies = dict(resp.cookies)
+            body = resp.text
+
+            match = re.search(r'name="execution" value="(.*?)"', body)
+            if not match:
+                raise RuntimeError("无法获取 execution token")
+            execution = match.group(1)
+
+            # Step 2: GET RSA public key
+            resp = await client.get(
+                "https://zjuam.zju.edu.cn/cas/v2/getPubKey",
+                cookies=cookies,
+            )
+            cookies.update(dict(resp.cookies))
+            key_body = resp.text
+
+            mod_match = re.search(r'"modulus":"(.*?)"', key_body)
+            exp_match = re.search(r'"exponent":"(.*?)"', key_body)
+            if not mod_match or not exp_match:
+                raise RuntimeError("无法获取 RSA 公钥")
+
+            modulus_hex = mod_match.group(1)
+            exponent_hex = exp_match.group(1)
+
+            # Step 3: RSA encrypt password (same as zjuam.dart:48-54)
+            mod_int = int(modulus_hex, 16)
+            exp_int = int(exponent_hex, 16)
+            pwd_hex = password.encode("utf-8").hex()
+            pwd_int = int(pwd_hex, 16)
+            encrypted_int = pow(pwd_int, exp_int, mod_int)
+            pwd_enc = format(encrypted_int, "x").zfill(128)
+
+            # Step 4: POST login
+            resp = await client.post(
+                "https://zjuam.zju.edu.cn/cas/login",
+                data={
+                    "username": username,
+                    "password": pwd_enc,
+                    "execution": execution,
+                    "_eventId": "submit",
+                    "rememberMe": "true",
+                },
+                cookies=cookies,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+            # Extract iPlanetDirectoryPro from response cookies
+            iplanet = resp.cookies.get("iPlanetDirectoryPro")
+            if not iplanet:
+                raise RuntimeError("学号或密码错误")
+
+            self._iplanet = iplanet
+            return iplanet
+
+    async def login_zdbk(self, iplanet: str | None = None) -> dict:
+        """教务网 ZDBK 登录，返回 cookies dict {JSESSIONID, route}。
+
+        流程: CAS service login → follow redirect → extract cookies
+        """
+        iplanet = iplanet or self._iplanet
+        if not iplanet:
+            raise RuntimeError("iPlanetDirectoryPro 无效，请先登录")
+
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=self.timeout,
+            verify=True,
+        ) as client:
+            # Step 1: CAS service login for ZDBK
+            resp = await client.get(
+                "https://zjuam.zju.edu.cn/cas/login"
+                "?service=https%3A%2F%2Fzdbk.zju.edu.cn%2Fjwglxt%2Fxtgl%2Flogin_ssologin.html",
+                cookies={"iPlanetDirectoryPro": iplanet},
+            )
+
+            location = resp.headers.get("location")
+            if not location:
+                raise RuntimeError("iPlanetDirectoryPro 无效")
+            if location.startswith("http://"):
+                location = location.replace("http://", "https://", 1)
+
+            # Step 2: Follow redirect to ZDBK
+            resp = await client.get(location)
+
+            # Parse Set-Cookie headers manually to handle multiple same-name cookies
+            jsessionid = None
+            route = None
+            for header_val in resp.headers.multi_items():
+                if header_val[0].lower() == "set-cookie":
+                    cookie_str = header_val[1]
+                    if cookie_str.startswith("JSESSIONID="):
+                        # Take the one with path=/jwglxt if multiple exist
+                        if "/jwglxt" in cookie_str or jsessionid is None:
+                            jsessionid = cookie_str.split("=", 1)[1].split(";")[0]
+                    elif cookie_str.startswith("route="):
+                        route = cookie_str.split("=", 1)[1].split(";")[0]
+
+            if not jsessionid:
+                raise RuntimeError("无法获取 JSESSIONID")
+            if not route:
+                raise RuntimeError("无法获取 route")
+
+            self._zdbk_cookies = {"JSESSIONID": jsessionid, "route": route}
+            return self._zdbk_cookies
+
+    async def login_courses(self, iplanet: str | None = None) -> str:
+        """学在浙大 Courses 登录，返回 session cookie 值。
+
+        流程: GET /user/index → follow redirects manually → extract session cookie
+        """
+        iplanet = iplanet or self._iplanet
+        if not iplanet:
+            raise RuntimeError("iPlanetDirectoryPro 无效，请先登录")
+
+        cookies = {"iPlanetDirectoryPro": iplanet}
+        session_value = None
+
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=self.timeout,
+            verify=True,
+        ) as client:
+            url = "https://courses.zju.edu.cn/user/index"
+            max_redirects = 20
+            for _ in range(max_redirects):
+                resp = await client.get(url, cookies=cookies)
+                # Collect cookies from each response
+                cookies.update(dict(resp.cookies))
+
+                if "session" in resp.cookies:
+                    session_value = resp.cookies["session"]
+
+                if resp.is_redirect:
+                    next_url = resp.headers.get("location", "")
+                    if next_url == "https://courses.zju.edu.cn/user/index":
+                        # Final redirect — session should be set
+                        if session_value:
+                            break
+                    url = next_url
+                else:
+                    break
+
+        if not session_value:
+            raise RuntimeError("无法获取 session cookie")
+
+        self._courses_session = session_value
+        return session_value
+
+    async def login_zhiyun(self, iplanet: str | None = None) -> str:
+        """智云课堂登录，返回 JWT Bearer token。
+
+        完整 OAuth 2.0 流程:
+        1. tgmedia.cmc.zju.edu.cn/index.php?r=auth/login → 302 到 OAuth authorize
+        2. zjuam OAuth authorize + iPlanetDirectoryPro → 302 链 → tgmedia/get-info?code=xxx
+        3. tgmedia/get-info 返回 JWT
+        """
+        iplanet = iplanet or self._iplanet
+        if not iplanet:
+            raise RuntimeError("iPlanetDirectoryPro 无效，请先登录")
+
+        cookies = {"iPlanetDirectoryPro": iplanet}
+        jwt = None
+
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=self.timeout,
+            verify=True,
+        ) as client:
+            # Step 1: Hit tgmedia auth/login to get OAuth authorize URL
+            resp = await client.get(
+                "https://tgmedia.cmc.zju.edu.cn/index.php"
+                "?r=auth/login&auType=&tenant_code=112"
+                "&forward=https%3A%2F%2Fclassroom.zju.edu.cn%2F",
+            )
+            # Collect tgmedia cookies (PHPSESSID, _csrf, etc.)
+            tgmedia_cookies = dict(resp.cookies)
+
+            if not resp.is_redirect:
+                raise RuntimeError("智云认证失败：tgmedia 未重定向")
+
+            oauth_url = resp.headers.get("location", "")
+            if "oauth2.0/authorize" not in oauth_url:
+                raise RuntimeError(f"智云认证失败：非预期的重定向 {oauth_url[:100]}")
+
+            # Step 2: Hit OAuth authorize with iPlanetDirectoryPro
+            # This should 302 → callbackAuthorize → 302 back to tgmedia with ?code=xxx
+            url = oauth_url
+            max_redirects = 10
+            for _ in range(max_redirects):
+                resp = await client.get(url, cookies=cookies)
+                cookies.update(dict(resp.cookies))
+
+                if not resp.is_redirect:
+                    break
+
+                url = resp.headers.get("location", "")
+                if url.startswith("http://"):
+                    url = url.replace("http://", "https://", 1)
+
+                # When we reach tgmedia/get-info with code, that's our target
+                if "tgmedia.cmc.zju.edu.cn" in url and "code=" in url:
+                    # Step 3: Hit tgmedia/get-info with the OAuth code + tgmedia cookies
+                    all_cookies = {**tgmedia_cookies, **cookies}
+                    resp = await client.get(url, cookies=all_cookies)
+
+                    # Follow any further redirects from tgmedia
+                    final_cookies = dict(resp.cookies)
+                    body = resp.text
+
+                    # Try extracting JWT from response
+                    jwt = self._extract_jwt(resp, body, final_cookies)
+
+                    # If tgmedia redirects further, follow
+                    if not jwt and resp.is_redirect:
+                        next_url = resp.headers.get("location", "")
+                        if next_url:
+                            all_cookies.update(final_cookies)
+                            resp2 = await client.get(next_url, cookies=all_cookies)
+                            jwt = self._extract_jwt(resp2, resp2.text, dict(resp2.cookies))
+
+                    break
+
+            if not jwt:
+                raise RuntimeError(
+                    "无法自动获取智云 JWT。请手动登录 classroom.zju.edu.cn 后，"
+                    "从浏览器开发者工具中复制 Authorization header 的 Bearer token，"
+                    "并通过 --zhiyun-token 参数提供。"
+                )
+
+            self._zhiyun_jwt = jwt
+            return jwt
+
+    @staticmethod
+    def _extract_jwt(resp, body: str, cookies: dict) -> str | None:
+        """从响应中提取 JWT token。"""
+        # Strategy 1: Check cookies
+        for name in ["_token", "JWTUser", "token", "jwt", "access_token", "Authorization"]:
+            val = cookies.get(name)
+            if val and len(val) > 20:
+                return val
+
+        # Strategy 2: Check JSON response
+        try:
+            data = resp.json()
+            token = (
+                data.get("token")
+                or data.get("access_token")
+                or data.get("data", {}).get("token")
+                or data.get("data", {}).get("access_token")
+            )
+            if token:
+                return token
+        except Exception:
+            pass
+
+        # Strategy 3: Check HTML/JS for embedded token
+        token_match = re.search(
+            r'(?:token|jwt|access_token)\s*[=:]\s*["\']([A-Za-z0-9\-_.]+(?:\.[A-Za-z0-9\-_.]+){1,2})["\']',
+            body,
+        )
+        if token_match:
+            return token_match.group(1)
+
+        return None
+
+    def set_zhiyun_jwt(self, jwt: str):
+        """手动设置智云 JWT（当自动获取失败时使用）。"""
+        self._zhiyun_jwt = jwt
+
+    def logout(self):
+        """清除所有认证状态。"""
+        self._iplanet = None
+        self._zdbk_cookies = None
+        self._courses_session = None
+        self._zhiyun_jwt = None
