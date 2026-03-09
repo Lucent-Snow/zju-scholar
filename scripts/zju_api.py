@@ -282,12 +282,22 @@ class ZdbkApi:
             raise RuntimeError("无法解析课表数据")
 
         raw_list = json.loads(match.group(0))
+
+        # 按学年过滤：xkkh 格式为 "(2025-2026-1)-XXX"，提取学年起始年份
+        year_int = int(year)
+        year_prefix = f"({year}-{year_int + 1}-"
+
         sessions = []
         for item in raw_list:
-            if item.get("kcb"):
-                parsed = parse_session(item)
-                if parsed:
-                    sessions.append(parsed)
+            if not item.get("kcb"):
+                continue
+            # 过滤非当前学年的课程
+            xkkh = item.get("xkkh", "")
+            if xkkh and not xkkh.startswith(year_prefix):
+                continue
+            parsed = parse_session(item)
+            if parsed:
+                sessions.append(parsed)
 
         return sessions
 

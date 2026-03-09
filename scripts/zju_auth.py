@@ -285,11 +285,33 @@ class ZjuAuth:
     @staticmethod
     def _extract_jwt(resp, body: str, cookies: dict) -> str | None:
         """从响应中提取 JWT token。"""
+        import urllib.parse
+
+        def _unwrap_jwt(raw: str) -> str | None:
+            """从原始值中提取真正的 JWT（eyJ... 格式）。
+            
+            tgmedia 返回的 _identity cookie 是 PHP 序列化格式，
+            真正的 JWT 嵌套在里面，需要 URL 解码后用正则提取。
+            """
+            decoded = urllib.parse.unquote(raw)
+            jwt_match = re.search(
+                r'(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)',
+                decoded,
+            )
+            if jwt_match:
+                return jwt_match.group(1)
+            # 如果本身就是 JWT 格式，直接返回
+            if raw.startswith("eyJ") and raw.count(".") == 2:
+                return raw
+            return None
+
         # Strategy 1: Check cookies
-        for name in ["_token", "JWTUser", "token", "jwt", "access_token", "Authorization"]:
+        for name in ["_token", "JWTUser", "token", "jwt", "access_token", "Authorization", "_identity"]:
             val = cookies.get(name)
             if val and len(val) > 20:
-                return val
+                extracted = _unwrap_jwt(val)
+                if extracted:
+                    return extracted
 
         # Strategy 2: Check JSON response
         try:
@@ -301,13 +323,14 @@ class ZjuAuth:
                 or data.get("data", {}).get("access_token")
             )
             if token:
-                return token
+                extracted = _unwrap_jwt(token)
+                return extracted or token
         except Exception:
             pass
 
         # Strategy 3: Check HTML/JS for embedded token
         token_match = re.search(
-            r'(?:token|jwt|access_token)\s*[=:]\s*["\']([A-Za-z0-9\-_.]+(?:\.[A-Za-z0-9\-_.]+){1,2})["\']',
+            r'(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)',
             body,
         )
         if token_match:
