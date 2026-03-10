@@ -34,8 +34,24 @@ def load_session() -> dict:
     return {}
 
 
+def _get_webvpn():
+    """从 session 中恢复 WebVPN 状态。"""
+    session = load_session()
+    if session.get("webvpn_enabled") and session.get("webvpn_cookies"):
+        from zju_webvpn import WebVpnSession
+        vpn = WebVpnSession()
+        vpn.cookies = session["webvpn_cookies"]
+        vpn.logged_in = True
+        return vpn
+    return None
+
+
 def get_zdbk_api() -> ZdbkApi:
     session = load_session()
+    webvpn = _get_webvpn()
+    if webvpn:
+        # WebVPN 模式: 不需要 ZDBK cookies，WebVPN 代理内部管理
+        return ZdbkApi({}, webvpn=webvpn)
     cookies = session.get("zdbk_cookies")
     if not cookies:
         print("错误: 未登录教务网。请先运行 python zju_login.py", file=sys.stderr)
@@ -45,6 +61,10 @@ def get_zdbk_api() -> ZdbkApi:
 
 def get_courses_api() -> CoursesApi:
     session = load_session()
+    webvpn = _get_webvpn()
+    if webvpn:
+        # WebVPN 模式: 不需要 session cookie，WebVPN 代理内部管理
+        return CoursesApi("", webvpn=webvpn)
     session_cookie = session.get("courses_session")
     if not session_cookie:
         print("错误: 未登录学在浙大。请先运行 python zju_login.py", file=sys.stderr)

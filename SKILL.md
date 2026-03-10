@@ -22,9 +22,14 @@ description: >
 
 需要先登录才能查询数据。凭证保存在 skill 文件夹的 `data/` 目录中。
 
+在校外网络环境下，脚本会自动检测并通过 WebVPN 代理访问校内服务。
+
 ```bash
-# 首次登录（保存凭证 + 登录所有服务）
+# 首次登录（保存凭证 + 登录所有服务，自动检测网络环境）
 python <SKILL>/scripts/zju_login.py -u 学号 -p 密码
+
+# 强制使用 WebVPN（校外网络）
+python <SKILL>/scripts/zju_login.py --webvpn
 
 # 后续登录（使用已保存的凭证）
 python <SKILL>/scripts/zju_login.py
@@ -100,5 +105,8 @@ python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --teacher 张
 ## 注意事项
 
 - Session 会过期，如果查询报错请重新运行 `zju_login.py`
+- 校外网络自动通过 WebVPN 代理，无需额外配置
+- WebVPN 的 ticket cookie 也会过期，过期后重新登录即可
 - 智云 JWT 自动获取可能不稳定，失败时需要从浏览器开发者工具复制 Authorization header 中的 Bearer token
 - 所有脚本输出 JSON 格式，方便解析
+- 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)

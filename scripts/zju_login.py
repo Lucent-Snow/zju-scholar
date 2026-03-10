@@ -3,6 +3,7 @@
 用法:
   python zju_login.py                  # 使用已保存的凭证登录
   python zju_login.py -u 学号 -p 密码  # 指定凭证登录（同时保存）
+  python zju_login.py --webvpn         # 通过 WebVPN 登录（校外网络）
   python zju_login.py --save-only -u 学号 -p 密码  # 只保存凭证不登录
   python zju_login.py --status         # 查看当前登录状态
   python zju_login.py --zhiyun-token TOKEN  # 设置智云 JWT
@@ -62,7 +63,61 @@ def load_session() -> dict:
     return {}
 
 
-async def do_login(username: str, password: str, zhiyun_token: str = ""):
+async def do_login(username: str, password: str, zhiyun_token: str = "", use_webvpn: bool = False):
+    # 检测网络环境
+    from zju_webvpn import WebVpnSession
+    probe = WebVpnSession()
+    is_campus = await probe.check_campus_network()
+
+    if use_webvpn or not is_campus:
+        if not is_campus and not use_webvpn:
+            print("检测到非校园网环境，自动启用 WebVPN...")
+        await _do_login_webvpn(username, password, zhiyun_token, probe)
+    else:
+        await _do_login_direct(username, password, zhiyun_token)
+
+
+async def _do_login_webvpn(username: str, password: str, zhiyun_token: str, vpn):
+    """通过 WebVPN 登录所有服务。"""
+    print("正在登录 WebVPN...")
+    ok = await vpn.login(username, password)
+    if not ok:
+        raise RuntimeError("WebVPN 登录失败，请检查学号密码")
+    print("  WebVPN 登录成功")
+
+    print(f"正在通过 WebVPN 登录统一认证 (学号: {username})...")
+    await vpn.sso_login_via_vpn(username, password)
+    print("  统一认证登录成功")
+
+    session = {"username": username, "webvpn_enabled": True, "webvpn_cookies": vpn.cookies}
+
+    print("正在通过 WebVPN 登录教务网(ZDBK)...")
+    await vpn.login_service_via_vpn(
+        "https://zjuam.zju.edu.cn/cas/login"
+        "?service=https%3A%2F%2Fzdbk.zju.edu.cn%2Fjwglxt%2Fxtgl%2Flogin_ssologin.html"
+    )
+    session["webvpn_cookies"] = vpn.cookies
+    print("  教务网登录成功")
+
+    print("正在通过 WebVPN 登录学在浙大(Courses)...")
+    await vpn.login_service_via_vpn(
+        "https://zjuam.zju.edu.cn/cas/login"
+        "?service=https%3A%2F%2Fcourses.zju.edu.cn%2Fuser%2Findex"
+    )
+    session["webvpn_cookies"] = vpn.cookies
+    print("  学在浙大登录成功")
+
+    if zhiyun_token:
+        session["zhiyun_jwt"] = zhiyun_token
+        print("  智云 JWT 已设置（手动提供）")
+
+    save_session(session)
+    print("\n登录完成，session 已保存（WebVPN 模式）。")
+    return session
+
+
+async def _do_login_direct(username: str, password: str, zhiyun_token: str):
+    """直连模式登录（校园网内）。"""
     auth = ZjuAuth()
 
     print(f"正在登录统一认证 (学号: {username})...")
@@ -114,8 +169,12 @@ def show_status():
     print("\n=== Session ===")
     if session:
         print(f"  学号: {session.get('username', '未知')}")
-        print(f"  ZDBK: {'已登录' if session.get('zdbk_cookies') else '未登录'}")
-        print(f"  Courses: {'已登录' if session.get('courses_session') else '未登录'}")
+        if session.get("webvpn_enabled"):
+            print(f"  模式: WebVPN (校外)")
+        else:
+            print(f"  模式: 直连 (校内)")
+            print(f"  ZDBK: {'已登录' if session.get('zdbk_cookies') else '未登录'}")
+            print(f"  Courses: {'已登录' if session.get('courses_session') else '未登录'}")
         print(f"  智云 JWT: {'已设置' if session.get('zhiyun_jwt') else '未设置'}")
     else:
         print("  未登录")
@@ -127,6 +186,7 @@ def main():
     parser.add_argument("-p", "--password", help="密码")
     parser.add_argument("--zhiyun-token", help="智云课堂 JWT token")
     parser.add_argument("--save-only", action="store_true", help="只保存凭证不登录")
+    parser.add_argument("--webvpn", action="store_true", help="强制通过 WebVPN 登录（校外网络）")
     parser.add_argument("--status", action="store_true", help="查看当前状态")
     args = parser.parse_args()
 
@@ -169,7 +229,7 @@ def main():
         return
 
     try:
-        asyncio.run(do_login(username, password, zhiyun_token))
+        asyncio.run(do_login(username, password, zhiyun_token, use_webvpn=args.webvpn))
     except Exception as e:
         print(f"登录失败: {e}", file=sys.stderr)
         sys.exit(1)

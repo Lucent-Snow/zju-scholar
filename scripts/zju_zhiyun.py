@@ -29,15 +29,30 @@ class ZhiyunApi:
         student_id: str = "",
         user_id: str = "",
         timeout: float = 8.0,
+        webvpn=None,
     ):
         self.jwt = jwt
         self.student_id = student_id
         self.user_id = user_id
         self.timeout = timeout
+        self._webvpn = webvpn
         self._headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Authorization": f"Bearer {jwt}" if not jwt.startswith("Bearer ") else jwt,
         }
+
+    def _url(self, url: str) -> str:
+        if self._webvpn and self._webvpn.logged_in:
+            from zju_webvpn import convert_url
+            return convert_url(url)
+        return url
+
+    def _make_client(self, **kwargs) -> httpx.AsyncClient:
+        kwargs.setdefault("timeout", self.timeout)
+        kwargs.setdefault("verify", True)
+        if self._webvpn and self._webvpn.logged_in:
+            return self._webvpn.make_client(**kwargs)
+        return httpx.AsyncClient(**kwargs)
 
     async def search_courses(
         self,
@@ -67,11 +82,11 @@ class ZhiyunApi:
 
         all_courses = []
 
-        async with httpx.AsyncClient(timeout=self.timeout, verify=True) as client:
+        async with self._make_client() as client:
             current_page = page
             while True:
                 params["page"] = current_page
-                resp = await client.get(URL_SEARCH, headers=self._headers, params=params)
+                resp = await client.get(self._url(URL_SEARCH), headers=self._headers, params=params)
                 data = resp.json()
 
                 raw_list = []
@@ -114,8 +129,8 @@ class ZhiyunApi:
             f"https://classroom.zju.edu.cn/coursedetail?course_id={course_id}&tenant_code=112"
         )
 
-        async with httpx.AsyncClient(timeout=self.timeout, verify=True) as client:
-            resp = await client.get(URL_DETAIL, headers=headers, params=params)
+        async with self._make_client() as client:
+            resp = await client.get(self._url(URL_DETAIL), headers=headers, params=params)
             data = resp.json()
 
         if data.get("code") != 0:
@@ -157,8 +172,8 @@ class ZhiyunApi:
         headers = self._headers.copy()
         headers["Referer"] = f"https://classroom.zju.edu.cn/livingroom?sub_id={sub_id}"
 
-        async with httpx.AsyncClient(timeout=self.timeout, verify=True) as client:
-            resp = await client.get(URL_TRANS, headers=headers, params=params)
+        async with self._make_client() as client:
+            resp = await client.get(self._url(URL_TRANS), headers=headers, params=params)
 
         if resp.status_code != 200:
             return None
@@ -214,12 +229,19 @@ def _get_api():
 
     jwt = None
     student_id = ""
+    webvpn = None
 
     if SESSION_FILE.exists():
         try:
             session = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
             jwt = session.get("zhiyun_jwt")
             student_id = session.get("username", "")
+            # 恢复 WebVPN 状态
+            if session.get("webvpn_enabled") and session.get("webvpn_cookies"):
+                from zju_webvpn import WebVpnSession
+                webvpn = WebVpnSession()
+                webvpn.cookies = session["webvpn_cookies"]
+                webvpn.logged_in = True
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -235,7 +257,7 @@ def _get_api():
         print("错误: 未设置智云 JWT。请先运行 python zju_login.py 或通过 --zhiyun-token 设置。", file=sys.stderr)
         sys.exit(1)
 
-    return ZhiyunApi(jwt=jwt, student_id=student_id)
+    return ZhiyunApi(jwt=jwt, student_id=student_id, webvpn=webvpn)
 
 
 async def _cmd_search(teacher_name: str = "", keyword: str = ""):

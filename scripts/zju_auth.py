@@ -11,12 +11,46 @@ import httpx
 
 
 class ZjuAuth:
-    def __init__(self, timeout: float = 8.0):
+    def __init__(self, timeout: float = 8.0, webvpn=None):
+        """
+        Args:
+            timeout: HTTP 请求超时
+            webvpn: 可选的 WebVpnSession 实例。传入后所有请求走 WebVPN 代理。
+        """
         self.timeout = timeout
+        self._webvpn = webvpn
         self._iplanet: str | None = None
         self._zdbk_cookies: dict | None = None
         self._courses_session: str | None = None
         self._zhiyun_jwt: str | None = None
+
+    def _url(self, url: str) -> str:
+        """如果启用了 WebVPN，转换 URL。"""
+        if self._webvpn and self._webvpn.logged_in:
+            from zju_webvpn import convert_url
+            return convert_url(url)
+        return url
+
+    def _make_client(self, **kwargs) -> httpx.AsyncClient:
+        """创建 HTTP 客户端，WebVPN 模式下自动注入 cookie。"""
+        kwargs.setdefault("follow_redirects", False)
+        kwargs.setdefault("timeout", self.timeout)
+        kwargs.setdefault("verify", True)
+        if self._webvpn and self._webvpn.logged_in:
+            return self._webvpn.make_client(**kwargs)
+        return httpx.AsyncClient(**kwargs)
+
+    def _convert_redirect(self, location: str) -> str:
+        """处理重定向 URL: WebVPN 模式下转换非 WebVPN 的 URL。"""
+        if not location:
+            return location
+        if location.startswith("http://"):
+            location = location.replace("http://", "https://", 1)
+        if self._webvpn and self._webvpn.logged_in:
+            from zju_webvpn import WEBVPN_HOST, convert_url
+            if WEBVPN_HOST not in location:
+                return convert_url(location)
+        return location
 
     @property
     def is_logged_in(self) -> bool:
@@ -43,13 +77,9 @@ class ZjuAuth:
 
         流程: GET login page → GET RSA pubkey → encrypt password → POST login
         """
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=self.timeout,
-            verify=True,
-        ) as client:
+        async with self._make_client() as client:
             # Step 1: GET login page to get execution token and cookies
-            resp = await client.get("https://zjuam.zju.edu.cn/cas/login")
+            resp = await client.get(self._url("https://zjuam.zju.edu.cn/cas/login"))
             cookies = dict(resp.cookies)
             body = resp.text
 
@@ -60,7 +90,7 @@ class ZjuAuth:
 
             # Step 2: GET RSA public key
             resp = await client.get(
-                "https://zjuam.zju.edu.cn/cas/v2/getPubKey",
+                self._url("https://zjuam.zju.edu.cn/cas/v2/getPubKey"),
                 cookies=cookies,
             )
             cookies.update(dict(resp.cookies))
@@ -84,7 +114,7 @@ class ZjuAuth:
 
             # Step 4: POST login
             resp = await client.post(
-                "https://zjuam.zju.edu.cn/cas/login",
+                self._url("https://zjuam.zju.edu.cn/cas/login"),
                 data={
                     "username": username,
                     "password": pwd_enc,
@@ -113,23 +143,20 @@ class ZjuAuth:
         if not iplanet:
             raise RuntimeError("iPlanetDirectoryPro 无效，请先登录")
 
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=self.timeout,
-            verify=True,
-        ) as client:
+        async with self._make_client() as client:
             # Step 1: CAS service login for ZDBK
             resp = await client.get(
-                "https://zjuam.zju.edu.cn/cas/login"
-                "?service=https%3A%2F%2Fzdbk.zju.edu.cn%2Fjwglxt%2Fxtgl%2Flogin_ssologin.html",
+                self._url(
+                    "https://zjuam.zju.edu.cn/cas/login"
+                    "?service=https%3A%2F%2Fzdbk.zju.edu.cn%2Fjwglxt%2Fxtgl%2Flogin_ssologin.html"
+                ),
                 cookies={"iPlanetDirectoryPro": iplanet},
             )
 
             location = resp.headers.get("location")
             if not location:
                 raise RuntimeError("iPlanetDirectoryPro 无效")
-            if location.startswith("http://"):
-                location = location.replace("http://", "https://", 1)
+            location = self._convert_redirect(location)
 
             # Step 2: Follow redirect to ZDBK
             resp = await client.get(location)
@@ -167,12 +194,8 @@ class ZjuAuth:
         cookies = {"iPlanetDirectoryPro": iplanet}
         session_value = None
 
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=self.timeout,
-            verify=True,
-        ) as client:
-            url = "https://courses.zju.edu.cn/user/index"
+        async with self._make_client() as client:
+            url = self._url("https://courses.zju.edu.cn/user/index")
             max_redirects = 20
             for _ in range(max_redirects):
                 resp = await client.get(url, cookies=cookies)
@@ -184,7 +207,9 @@ class ZjuAuth:
 
                 if resp.is_redirect:
                     next_url = resp.headers.get("location", "")
-                    if next_url == "https://courses.zju.edu.cn/user/index":
+                    next_url = self._convert_redirect(next_url)
+                    if next_url.rstrip("/").endswith("courses.zju.edu.cn/user/index") or \
+                       ("courses.zju.edu.cn" in next_url and next_url.endswith("/user/index")):
                         # Final redirect — session should be set
                         if session_value:
                             break
@@ -213,16 +238,14 @@ class ZjuAuth:
         cookies = {"iPlanetDirectoryPro": iplanet}
         jwt = None
 
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=self.timeout,
-            verify=True,
-        ) as client:
+        async with self._make_client() as client:
             # Step 1: Hit tgmedia auth/login to get OAuth authorize URL
             resp = await client.get(
-                "https://tgmedia.cmc.zju.edu.cn/index.php"
-                "?r=auth/login&auType=&tenant_code=112"
-                "&forward=https%3A%2F%2Fclassroom.zju.edu.cn%2F",
+                self._url(
+                    "https://tgmedia.cmc.zju.edu.cn/index.php"
+                    "?r=auth/login&auType=&tenant_code=112"
+                    "&forward=https%3A%2F%2Fclassroom.zju.edu.cn%2F"
+                ),
             )
             # Collect tgmedia cookies (PHPSESSID, _csrf, etc.)
             tgmedia_cookies = dict(resp.cookies)
@@ -231,11 +254,11 @@ class ZjuAuth:
                 raise RuntimeError("智云认证失败：tgmedia 未重定向")
 
             oauth_url = resp.headers.get("location", "")
-            if "oauth2.0/authorize" not in oauth_url:
+            oauth_url = self._convert_redirect(oauth_url)
+            if "oauth2.0/authorize" not in oauth_url and "oauth2" not in oauth_url:
                 raise RuntimeError(f"智云认证失败：非预期的重定向 {oauth_url[:100]}")
 
             # Step 2: Hit OAuth authorize with iPlanetDirectoryPro
-            # This should 302 → callbackAuthorize → 302 back to tgmedia with ?code=xxx
             url = oauth_url
             max_redirects = 10
             for _ in range(max_redirects):
@@ -246,14 +269,15 @@ class ZjuAuth:
                     break
 
                 url = resp.headers.get("location", "")
-                if url.startswith("http://"):
-                    url = url.replace("http://", "https://", 1)
+                url = self._convert_redirect(url)
 
                 # When we reach tgmedia/get-info with code, that's our target
                 if "tgmedia.cmc.zju.edu.cn" in url and "code=" in url:
                     # Step 3: Hit tgmedia/get-info with the OAuth code + tgmedia cookies
                     all_cookies = {**tgmedia_cookies, **cookies}
-                    resp = await client.get(url, cookies=all_cookies)
+                    # 确保 URL 也经过转换
+                    target_url = self._url(url) if "webvpn" not in url else url
+                    resp = await client.get(target_url, cookies=all_cookies)
 
                     # Follow any further redirects from tgmedia
                     final_cookies = dict(resp.cookies)
@@ -265,6 +289,7 @@ class ZjuAuth:
                     # If tgmedia redirects further, follow
                     if not jwt and resp.is_redirect:
                         next_url = resp.headers.get("location", "")
+                        next_url = self._convert_redirect(next_url)
                         if next_url:
                             all_cookies.update(final_cookies)
                             resp2 = await client.get(next_url, cookies=all_cookies)

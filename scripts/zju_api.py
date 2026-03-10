@@ -250,20 +250,32 @@ def calculate_gpa(grades: list[dict]) -> dict:
 class ZdbkApi:
     """教务网 ZDBK API client."""
 
-    def __init__(self, cookies: dict, timeout: float = 8.0):
+    def __init__(self, cookies: dict, timeout: float = 8.0, webvpn=None):
         self.cookies = cookies
         self.timeout = timeout
+        self._webvpn = webvpn
+
+    def _url(self, url: str) -> str:
+        if self._webvpn and self._webvpn.logged_in:
+            from zju_webvpn import convert_url
+            return convert_url(url)
+        return url
+
+    def _make_client(self, **kwargs) -> httpx.AsyncClient:
+        kwargs.setdefault("timeout", self.timeout)
+        kwargs.setdefault("verify", True)
+        if self._webvpn and self._webvpn.logged_in:
+            kwargs.setdefault("follow_redirects", True)
+            return self._webvpn.make_client(**kwargs)
+        kwargs.setdefault("follow_redirects", False)
+        return httpx.AsyncClient(**kwargs)
 
     async def _post(self, url: str, data: str = "") -> str:
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=self.timeout,
-            verify=True,
-        ) as client:
+        async with self._make_client() as client:
             resp = await client.post(
-                url,
+                self._url(url),
                 content=data,
-                cookies=self.cookies,
+                cookies=self.cookies if not (self._webvpn and self._webvpn.logged_in) else {},
                 headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"},
             )
             return resp.text
@@ -347,19 +359,32 @@ class ZdbkApi:
 class CoursesApi:
     """学在浙大 Courses API client."""
 
-    def __init__(self, session_cookie: str, timeout: float = 8.0):
+    def __init__(self, session_cookie: str, timeout: float = 8.0, webvpn=None):
         self.session_cookie = session_cookie
         self.timeout = timeout
+        self._webvpn = webvpn
+
+    def _url(self, url: str) -> str:
+        if self._webvpn and self._webvpn.logged_in:
+            from zju_webvpn import convert_url
+            return convert_url(url)
+        return url
+
+    def _make_client(self, **kwargs) -> httpx.AsyncClient:
+        kwargs.setdefault("timeout", self.timeout)
+        kwargs.setdefault("verify", True)
+        if self._webvpn and self._webvpn.logged_in:
+            kwargs.setdefault("follow_redirects", True)
+            return self._webvpn.make_client(**kwargs)
+        return httpx.AsyncClient(**kwargs)
 
     async def get_todos(self) -> list[dict]:
         """获取作业/DDL 列表。"""
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            verify=True,
-        ) as client:
+        cookies = {"session": self.session_cookie} if not (self._webvpn and self._webvpn.logged_in) else {}
+        async with self._make_client() as client:
             resp = await client.get(
-                f"{COURSES_BASE}/api/todos",
-                cookies={"session": self.session_cookie},
+                self._url(f"{COURSES_BASE}/api/todos"),
+                cookies=cookies,
             )
             data = resp.json()
 
