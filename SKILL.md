@@ -2,8 +2,8 @@
 name: zju-scholar
 description: >
   浙大学习助手。当用户需要查询课表、成绩、GPA、考试安排、作业DDL，
-  或搜索智云课堂、获取课程字幕时使用。触发关键词：课表、成绩、GPA、
-  考试、作业、DDL、智云、字幕、学习内容。
+  或获取智云课堂课程内容、课程字幕时使用。触发关键词：课表、成绩、GPA、
+  考试、作业、DDL、智云、字幕、学习内容、我的课程。
 ---
 
 # ZJU Scholar — 浙大学习助手
@@ -64,18 +64,23 @@ python <SKILL>/scripts/zju_academic.py todos
 ## 脚本 3: zju_zhiyun.py — 智云课堂
 
 ```bash
-# 按教师搜索课程
-python <SKILL>/scripts/zju_zhiyun.py search --teacher 张三
+# 默认推荐：列出当前账号课程
+python <SKILL>/scripts/zju_zhiyun.py my-courses --keyword 数据科学
 
-# 按关键词搜索
-python <SKILL>/scripts/zju_zhiyun.py search --keyword 数据科学
-
-# 获取指定视频字幕
-python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345
-
-# 一键获取讲座内容（搜索→视频列表→字幕）
+# 一键获取讲座纯文本（默认过滤口头语，不带时间戳、不带翻译）
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学
-python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --teacher 张三 --index 0
+python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --timestamps
+python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --no-filter-fillers
+
+# 获取指定视频字幕（默认过滤口头语后的纯文本）
+python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345
+python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345 --timestamps
+python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345 --no-filter-fillers
+
+# 可选：全站搜索课程（当前平台下可能为空）
+python <SKILL>/scripts/zju_zhiyun.py search --teacher 张三
+python <SKILL>/scripts/zju_zhiyun.py search --keyword 数据科学
+python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理心理学
 ```
 
 ## 学期编码
@@ -92,7 +97,7 @@ python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --teacher 张
 - "我的 GPA 怎么样？" → `zju_academic.py grades`
 - "下周有什么考试？" → `zju_academic.py exams`
 - "最近有什么 DDL？" → `zju_academic.py todos`
-- "帮我找张三老师的课" → `zju_zhiyun.py search --teacher 张三`
+- "帮我找张三老师的课" → `zju_zhiyun.py search --teacher 张三`（旁路能力，可能为空）
 - "帮我看看上周的数据科学讲了什么" → `zju_zhiyun.py lecture --course 数据科学`
 
 ## 数据存储
@@ -107,6 +112,9 @@ python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --teacher 张
 - Session 会过期，如果查询报错请重新运行 `zju_login.py`
 - 校外网络自动通过 WebVPN 代理，无需额外配置
 - WebVPN 的 ticket cookie 也会过期，过期后重新登录即可
-- 智云 JWT 自动获取可能不稳定，失败时需要从浏览器开发者工具复制 Authorization header 中的 Bearer token
-- 所有脚本输出 JSON 格式，方便解析
+- 智云默认推荐走“我的课程/最近学习”链路，不依赖全站搜索
+- `search` 仅作为旁路能力，但现在会自动补齐 `user_id/user_name`，并在关键词无结果时尝试更短的模糊片段
+- 若已知教师名，优先同时传 `--teacher`，结果会明显更准
+- 智云字幕默认输出过滤口头语后的纯文本，适合直接阅读或交给 AI；如需更接近原始分段可显式加 `--no-filter-fillers`
+- 校外网络会通过 WebVPN 自动补齐智云 JWT，无需浏览器
 - 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)

@@ -14,6 +14,7 @@
 import argparse
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +29,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zju_auth import ZjuAuth
 
 
+JWT_RE = re.compile(r"(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)")
+
+
+def normalize_zhiyun_token(raw: str) -> str:
+    """接受裸 JWT、_token cookie 值或整段 cookie 文本，统一提取出 JWT。"""
+    if not raw:
+        return ""
+
+    value = raw.strip()
+    if value.startswith("Bearer "):
+        value = value[7:].strip()
+
+    match = JWT_RE.search(value)
+    if match:
+        return match.group(1)
+
+    return value
+
+
 def load_credentials() -> dict:
     if CRED_FILE.exists():
         try:
@@ -40,6 +60,7 @@ def load_credentials() -> dict:
 def save_credentials(username: str, password: str, zhiyun_token: str = ""):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     data = {"username": username, "password": password}
+    zhiyun_token = normalize_zhiyun_token(zhiyun_token)
     if zhiyun_token:
         data["zhiyun_token"] = zhiyun_token
     else:
@@ -64,6 +85,7 @@ def load_session() -> dict:
 
 
 async def do_login(username: str, password: str, zhiyun_token: str = "", use_webvpn: bool = False):
+    zhiyun_token = normalize_zhiyun_token(zhiyun_token)
     # 检测网络环境
     from zju_webvpn import WebVpnSession
     probe = WebVpnSession()
@@ -110,6 +132,16 @@ async def _do_login_webvpn(username: str, password: str, zhiyun_token: str, vpn)
     if zhiyun_token:
         session["zhiyun_jwt"] = zhiyun_token
         print("  智云 JWT 已设置（手动提供）")
+    else:
+        print("正在通过 WebVPN 登录智云课堂...")
+        try:
+            auth = ZjuAuth(webvpn=vpn)
+            jwt = await auth.login_zhiyun()
+            session["zhiyun_jwt"] = jwt
+            print("  智云课堂登录成功")
+        except RuntimeError as e:
+            print(f"  智云课堂自动登录失败: {e}")
+            print("  可通过 --zhiyun-token 参数手动设置")
 
     save_session(session)
     print("\n登录完成，session 已保存（WebVPN 模式）。")
@@ -184,7 +216,7 @@ def main():
     parser = argparse.ArgumentParser(description="浙大统一认证登录")
     parser.add_argument("-u", "--username", help="学号")
     parser.add_argument("-p", "--password", help="密码")
-    parser.add_argument("--zhiyun-token", help="智云课堂 JWT token")
+    parser.add_argument("--zhiyun-token", help="智云课堂 JWT，支持裸 JWT、_token cookie 值或整段 cookie 文本")
     parser.add_argument("--save-only", action="store_true", help="只保存凭证不登录")
     parser.add_argument("--webvpn", action="store_true", help="强制通过 WebVPN 登录（校外网络）")
     parser.add_argument("--status", action="store_true", help="查看当前状态")
@@ -197,13 +229,13 @@ def main():
     # 获取凭证：优先命令行参数，其次已保存的凭证
     username = args.username
     password = args.password
-    zhiyun_token = args.zhiyun_token or ""
+    zhiyun_token = normalize_zhiyun_token(args.zhiyun_token or "")
 
     if not username or not password:
         cred = load_credentials()
         username = username or cred.get("username", "")
         password = password or cred.get("password", "")
-        zhiyun_token = zhiyun_token or cred.get("zhiyun_token", "")
+        zhiyun_token = zhiyun_token or normalize_zhiyun_token(cred.get("zhiyun_token", ""))
 
     if not username or not password:
         print("错误: 请提供学号和密码。用法: python zju_login.py -u 学号 -p 密码")
@@ -219,11 +251,11 @@ def main():
     # 如果只提供了 zhiyun-token，更新 session 中的 JWT
     if args.zhiyun_token and not args.username and not args.password:
         session = load_session()
-        session["zhiyun_jwt"] = args.zhiyun_token
+        session["zhiyun_jwt"] = normalize_zhiyun_token(args.zhiyun_token)
         save_session(session)
         # 也更新凭证文件
         cred = load_credentials()
-        cred["zhiyun_token"] = args.zhiyun_token
+        cred["zhiyun_token"] = normalize_zhiyun_token(args.zhiyun_token)
         CRED_FILE.write_text(json.dumps(cred, ensure_ascii=False, indent=2), encoding="utf-8")
         print("智云 JWT 已更新。")
         return

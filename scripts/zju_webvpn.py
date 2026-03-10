@@ -9,6 +9,7 @@
 """
 
 import re
+import time
 from urllib.parse import urlparse, quote
 from Crypto.Cipher import AES
 
@@ -284,3 +285,44 @@ class WebVpnSession:
         """从 client 同步 cookies 回 self.cookies，去重保留最新值。"""
         for cookie in client.cookies.jar:
             self.cookies[cookie.name] = cookie.value
+
+    @staticmethod
+    def parse_cookie_header(raw: str) -> dict[str, str]:
+        """解析 WebVPN cookie 桥返回的 Cookie header 文本。"""
+        cookies = {}
+        for chunk in raw.split(";"):
+            item = chunk.strip()
+            if not item or "=" not in item:
+                continue
+            name, value = item.split("=", 1)
+            name = name.strip()
+            if not name:
+                continue
+            cookies[name] = value.strip()
+        return cookies
+
+    async def get_app_cookies(
+        self,
+        host: str,
+        path: str = "/",
+        scheme: str = "https",
+    ) -> dict[str, str]:
+        """通过 WebVPN 内部 cookie 桥读取业务域 cookie。"""
+        if not self.logged_in:
+            raise RuntimeError("WebVPN 未登录")
+
+        url = (
+            f"{WEBVPN_BASE}/wengine-vpn/cookie"
+            f"?method=get&host={quote(host, safe='')}"
+            f"&scheme={quote(scheme, safe='')}"
+            f"&path={quote(path, safe='/')}"
+            f"&vpn_timestamp={int(time.time() * 1000)}"
+        )
+
+        async with self.make_client(timeout=self.timeout, verify=True, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"X-Requested-With": "XMLHttpRequest"})
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"读取 WebVPN cookie 失败: HTTP {resp.status_code}")
+
+        return self.parse_cookie_header(resp.text.strip())

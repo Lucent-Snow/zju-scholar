@@ -16,6 +16,7 @@ TTL_MAP = {
     "exams": 12 * 3600,                # 12 hours
     "todos": 1 * 3600,                 # 1 hour
     "zhiyun_search": 4 * 3600,         # 4 hours
+    "zhiyun_my_courses": 1 * 3600,     # 1 hour
     "zhiyun_transcript": 0,            # permanent (subtitles don't change)
 }
 
@@ -67,5 +68,5 @@ class CacheManager:
 
     @staticmethod
     def make_search_key(teacher: str = "", keyword: str = "") -> str:
-        raw = f"zhiyun_search_{teacher}_{keyword}"
+        raw = f"zhiyun_search_v3_{teacher}_{keyword}"
         return f"zhiyun_search_{hashlib.md5(raw.encode()).hexdigest()[:12]}"

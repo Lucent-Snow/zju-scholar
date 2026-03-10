@@ -231,6 +231,11 @@ class ZjuAuth:
         2. zjuam OAuth authorize + iPlanetDirectoryPro → 302 链 → tgmedia/get-info?code=xxx
         3. tgmedia/get-info 返回 JWT
         """
+        if self._webvpn and self._webvpn.logged_in:
+            jwt = await self._login_zhiyun_via_webvpn()
+            self._zhiyun_jwt = jwt
+            return jwt
+
         iplanet = iplanet or self._iplanet
         if not iplanet:
             raise RuntimeError("iPlanetDirectoryPro 无效，请先登录")
@@ -307,6 +312,37 @@ class ZjuAuth:
             self._zhiyun_jwt = jwt
             return jwt
 
+    async def _login_zhiyun_via_webvpn(self) -> str:
+        """WebVPN 模式下登录智云课堂并通过 cookie 桥提取 JWT。"""
+        auth_url = (
+            "https://tgmedia.cmc.zju.edu.cn/index.php"
+            "?r=auth/login&auType=&tenant_code=112"
+            "&forward=https%3A%2F%2Fclassroom.zju.edu.cn%2F"
+        )
+
+        # 先访问课堂首页，再触发 tgmedia 登录链。
+        async with self._webvpn.make_client(
+            timeout=self.timeout,
+            verify=True,
+            follow_redirects=True,
+        ) as client:
+            await client.get(self._url("https://classroom.zju.edu.cn/"))
+            await client.get(self._url(auth_url))
+
+        candidates = [
+            ("classroom.zju.edu.cn", "/"),
+            ("tgmedia.cmc.zju.edu.cn", "/"),
+        ]
+        for host, path in candidates:
+            cookies = await self._webvpn.get_app_cookies(host=host, path=path)
+            jwt = self._extract_jwt(None, "", cookies)
+            if jwt:
+                return jwt
+
+        raise RuntimeError(
+            "WebVPN 已登录，但未能从 cookie 桥中提取智云 JWT。"
+        )
+
     @staticmethod
     def _extract_jwt(resp, body: str, cookies: dict) -> str | None:
         """从响应中提取 JWT token。"""
@@ -339,19 +375,20 @@ class ZjuAuth:
                     return extracted
 
         # Strategy 2: Check JSON response
-        try:
-            data = resp.json()
-            token = (
-                data.get("token")
-                or data.get("access_token")
-                or data.get("data", {}).get("token")
-                or data.get("data", {}).get("access_token")
-            )
-            if token:
-                extracted = _unwrap_jwt(token)
-                return extracted or token
-        except Exception:
-            pass
+        if resp is not None:
+            try:
+                data = resp.json()
+                token = (
+                    data.get("token")
+                    or data.get("access_token")
+                    or data.get("data", {}).get("token")
+                    or data.get("data", {}).get("access_token")
+                )
+                if token:
+                    extracted = _unwrap_jwt(token)
+                    return extracted or token
+            except Exception:
+                pass
 
         # Strategy 3: Check HTML/JS for embedded token
         token_match = re.search(
