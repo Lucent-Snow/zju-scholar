@@ -11,7 +11,6 @@
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
@@ -19,57 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from zju_api import ZdbkApi, CoursesApi, calculate_gpa
 from zju_cache import CacheManager
-
-SKILL_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = SKILL_DIR / "data"
-SESSION_FILE = DATA_DIR / "session.json"
-
-
-def load_session() -> dict:
-    if SESSION_FILE.exists():
-        try:
-            return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
-
-
-def _get_webvpn():
-    """从 session 中恢复 WebVPN 状态。"""
-    session = load_session()
-    if session.get("webvpn_enabled") and session.get("webvpn_cookies"):
-        from zju_webvpn import WebVpnSession
-        vpn = WebVpnSession()
-        vpn.cookies = session["webvpn_cookies"]
-        vpn.logged_in = True
-        return vpn
-    return None
-
-
-def get_zdbk_api() -> ZdbkApi:
-    session = load_session()
-    webvpn = _get_webvpn()
-    if webvpn:
-        # WebVPN 模式: 不需要 ZDBK cookies，WebVPN 代理内部管理
-        return ZdbkApi({}, webvpn=webvpn)
-    cookies = session.get("zdbk_cookies")
-    if not cookies:
-        print("错误: 未登录教务网。请先运行 python zju_login.py", file=sys.stderr)
-        sys.exit(1)
-    return ZdbkApi(cookies)
-
-
-def get_courses_api() -> CoursesApi:
-    session = load_session()
-    webvpn = _get_webvpn()
-    if webvpn:
-        # WebVPN 模式: 不需要 session cookie，WebVPN 代理内部管理
-        return CoursesApi("", webvpn=webvpn)
-    session_cookie = session.get("courses_session")
-    if not session_cookie:
-        print("错误: 未登录学在浙大。请先运行 python zju_login.py", file=sys.stderr)
-        sys.exit(1)
-    return CoursesApi(session_cookie)
+from zju_output import emit_error, emit_success
+from zju_session import get_courses_api, get_zdbk_api
 
 
 cache = CacheManager()
@@ -81,12 +31,23 @@ async def cmd_courses(year: str, semester: str):
     cache_key = f"timetable_{year}_{semester}"
     cached = cache.get(cache_key, "timetable")
     if cached:
-        print(json.dumps(cached, ensure_ascii=False, indent=2))
+        emit_success(
+            platform="academic",
+            feature="timetable",
+            data=cached,
+            meta={"year": year, "semester": semester},
+            source="cache",
+        )
         return
 
     sessions = await api.get_timetable(year, semester)
     cache.set(cache_key, sessions, "timetable")
-    print(json.dumps(sessions, ensure_ascii=False, indent=2))
+    emit_success(
+        platform="academic",
+        feature="timetable",
+        data=sessions,
+        meta={"year": year, "semester": semester},
+    )
 
 
 async def cmd_grades():
@@ -94,7 +55,12 @@ async def cmd_grades():
 
     cached = cache.get("grades_all", "grades")
     if cached:
-        print(json.dumps(cached, ensure_ascii=False, indent=2))
+        emit_success(
+            platform="academic",
+            feature="grades",
+            data=cached,
+            source="cache",
+        )
         return
 
     grades = await api.get_grades()
@@ -111,7 +77,11 @@ async def cmd_grades():
     gpa = calculate_gpa(grades)
     result = {"grades": grades, "gpa": gpa}
     cache.set("grades_all", result, "grades")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    emit_success(
+        platform="academic",
+        feature="grades",
+        data=result,
+    )
 
 
 async def cmd_exams():
@@ -119,12 +89,21 @@ async def cmd_exams():
 
     cached = cache.get("exams_all", "exams")
     if cached:
-        print(json.dumps(cached, ensure_ascii=False, indent=2))
+        emit_success(
+            platform="academic",
+            feature="exams",
+            data=cached,
+            source="cache",
+        )
         return
 
     exams = await api.get_exams()
     cache.set("exams_all", exams, "exams")
-    print(json.dumps(exams, ensure_ascii=False, indent=2))
+    emit_success(
+        platform="academic",
+        feature="exams",
+        data=exams,
+    )
 
 
 async def cmd_todos():
@@ -132,12 +111,21 @@ async def cmd_todos():
 
     cached = cache.get("todos", "todos")
     if cached:
-        print(json.dumps(cached, ensure_ascii=False, indent=2))
+        emit_success(
+            platform="academic",
+            feature="todo_list",
+            data=cached,
+            source="cache",
+        )
         return
 
     todos = await api.get_todos()
     cache.set("todos", todos, "todos")
-    print(json.dumps(todos, ensure_ascii=False, indent=2))
+    emit_success(
+        platform="academic",
+        feature="todo_list",
+        data=todos,
+    )
 
 
 def main():
@@ -163,9 +151,10 @@ def main():
             asyncio.run(cmd_exams())
         elif args.command == "todos":
             asyncio.run(cmd_todos())
+    except RuntimeError as e:
+        emit_error(message=str(e) or e.__class__.__name__, platform="academic", feature=args.command)
     except Exception as e:
-        print(f"错误: {e}", file=sys.stderr)
-        sys.exit(1)
+        emit_error(message=str(e) or e.__class__.__name__, platform="academic", feature=args.command)
 
 
 if __name__ == "__main__":

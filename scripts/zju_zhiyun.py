@@ -12,10 +12,13 @@ from collections import OrderedDict
 
 import httpx
 import re
+import json
 
 URL_SEARCH = "https://classroom.zju.edu.cn/pptnote/v1/searchlist"
 URL_DETAIL = "https://yjapi.cmc.zju.edu.cn/courseapi/v3/multi-search/get-course-detail"
+URL_CATALOGUE = "https://yjapi.cmc.zju.edu.cn/courseapi/v2/course/catalogue"
 URL_TRANS = "https://yjapi.cmc.zju.edu.cn/courseapi/v3/web-socket/search-trans-result"
+URL_PPT = "https://classroom.zju.edu.cn/pptnote/v1/schedule/search-ppt"
 URL_MY_COURSES = (
     "https://education.cmc.zju.edu.cn/personal/courseapi/"
     "vlabpassportapi/v1/account-profile/course"
@@ -65,7 +68,7 @@ class ZhiyunApi:
         jwt: str,
         student_id: str = "",
         user_id: str = "",
-        timeout: float = 8.0,
+        timeout: float = 15.0,
         webvpn=None,
     ):
         self.jwt = jwt
@@ -441,6 +444,123 @@ class ZhiyunApi:
 
         return results
 
+    @staticmethod
+    def _parse_embedded_json(raw):
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str):
+            return {}
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    async def get_course_videos(
+        self,
+        course_id: int | str,
+        *,
+        teacher_name: str = "",
+        with_subtitles_only: bool = False,
+    ) -> list[dict]:
+        headers = self._headers.copy()
+        headers["Referer"] = (
+            f"https://classroom.zju.edu.cn/coursedetail?course_id={course_id}&tenant_code=112"
+        )
+
+        async with self._make_client() as client:
+            resp = await client.get(
+                self._url(URL_CATALOGUE),
+                headers=headers,
+                params={"course_id": str(course_id)},
+            )
+            data = resp.json()
+
+        raw_list = data.get("result", {}).get("data", []) or data.get("data", [])
+        videos = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            lecturer = item.get("lecturer_name", "") or item.get("realname", "")
+            if teacher_name and teacher_name not in lecturer:
+                continue
+
+            status = str(item.get("status", item.get("sub_status", "")))
+            if with_subtitles_only and status != "6":
+                continue
+
+            content = self._parse_embedded_json(item.get("content"))
+            playback = content.get("playback", {}) if isinstance(content, dict) else {}
+
+            videos.append(
+                {
+                    "course_id": item.get("course_id", course_id),
+                    "sub_id": item.get("sub_id") or item.get("id"),
+                    "title": item.get("title") or item.get("sub_title", "未知视频"),
+                    "lecturer_name": lecturer,
+                    "status": status,
+                    "start_at": item.get("start_at", ""),
+                    "end_at": item.get("end_at", ""),
+                    "duration": item.get("duration", 0),
+                    "playback_url": playback.get("url", ""),
+                    "has_subtitle": status == "6",
+                    "raw": item,
+                }
+            )
+
+        videos.sort(key=lambda item: int(item.get("sub_id") or 0), reverse=True)
+        return videos
+
+    async def get_ppt_timeline(
+        self,
+        course_id: int | str,
+        sub_id: int | str,
+        *,
+        per_page: int = 100,
+    ) -> list[dict]:
+        headers = self._headers.copy()
+        headers["Referer"] = f"https://classroom.zju.edu.cn/livingroom?sub_id={sub_id}"
+
+        timeline = []
+        async with self._make_client() as client:
+            page = 1
+            while True:
+                resp = await client.get(
+                    self._url(URL_PPT),
+                    headers=headers,
+                    params={
+                        "course_id": str(course_id),
+                        "sub_id": str(sub_id),
+                        "page": page,
+                        "per_page": per_page,
+                    },
+                )
+                data = resp.json()
+                raw_list = data.get("list", [])
+                if not raw_list:
+                    break
+
+                for item in raw_list:
+                    content = self._parse_embedded_json(item.get("content"))
+                    timeline.append(
+                        {
+                            "course_id": str(course_id),
+                            "sub_id": str(sub_id),
+                            "slide_id": item.get("id"),
+                            "created_sec": int(item.get("created_sec", 0) or 0),
+                            "image_url": content.get("pptimgurl", ""),
+                            "title": content.get("title", ""),
+                            "raw": item,
+                        }
+                    )
+
+                if len(raw_list) < per_page:
+                    break
+                page += 1
+
+        timeline.sort(key=lambda item: item["created_sec"])
+        return timeline
+
     async def get_course_detail(self, course_id: int | str, teacher_name: str = "") -> list[dict]:
         """获取课程视频列表。只返回 sub_status=6 (有字幕) 的视频。
 
@@ -689,50 +809,12 @@ class ZhiyunApi:
 # --- CLI ---
 
 def _get_api():
-    import json, sys
-    from pathlib import Path
+    from zju_session import get_zhiyun_api
 
-    SKILL_DIR = Path(__file__).resolve().parent.parent
-    SESSION_FILE = SKILL_DIR / "data" / "session.json"
-    CRED_FILE = SKILL_DIR / "data" / "credentials.json"
-
-    jwt = None
-    student_id = ""
-    user_id = ""
-    webvpn = None
-
-    if SESSION_FILE.exists():
-        try:
-            session = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-            jwt = session.get("zhiyun_jwt")
-            student_id = session.get("username", "")
-            user_id = str(session.get("user_id", ""))
-            # 恢复 WebVPN 状态
-            if session.get("webvpn_enabled") and session.get("webvpn_cookies"):
-                from zju_webvpn import WebVpnSession
-                webvpn = WebVpnSession()
-                webvpn.cookies = session["webvpn_cookies"]
-                webvpn.logged_in = True
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    if not jwt and CRED_FILE.exists():
-        try:
-            cred = json.loads(CRED_FILE.read_text(encoding="utf-8"))
-            jwt = cred.get("zhiyun_token")
-            student_id = student_id or cred.get("username", "")
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    if not jwt:
-        print("错误: 未设置智云 JWT。请先运行 python zju_login.py 或通过 --zhiyun-token 设置。", file=sys.stderr)
-        sys.exit(1)
-
-    return ZhiyunApi(jwt=jwt, student_id=student_id, user_id=user_id, webvpn=webvpn)
+    return get_zhiyun_api()
 
 
 async def _cmd_search(teacher_name: str = "", keyword: str = ""):
-    import json
     from zju_cache import CacheManager
 
     api = _get_api()
@@ -741,16 +823,24 @@ async def _cmd_search(teacher_name: str = "", keyword: str = ""):
     cache_key = CacheManager.make_search_key(teacher_name, keyword)
     cached = cache.get(cache_key, "zhiyun_search")
     if cached:
-        print(json.dumps(cached, ensure_ascii=False, indent=2))
+        _emit_zhiyun_success(
+            "search_courses",
+            cached,
+            meta={"teacher": teacher_name, "keyword": keyword},
+            source="cache",
+        )
         return
 
     courses = await api.search_courses(teacher_name=teacher_name, keyword=keyword)
     cache.set(cache_key, courses, "zhiyun_search")
-    print(json.dumps(courses, ensure_ascii=False, indent=2))
+    _emit_zhiyun_success(
+        "search_courses",
+        courses,
+        meta={"teacher": teacher_name, "keyword": keyword},
+    )
 
 
 async def _cmd_my_courses(teacher_name: str = "", keyword: str = ""):
-    import json
     from zju_cache import CacheManager
 
     api = _get_api()
@@ -759,12 +849,21 @@ async def _cmd_my_courses(teacher_name: str = "", keyword: str = ""):
     cache_key = f"zhiyun_my_courses_{teacher_name}_{keyword or '__all__'}"
     cached = cache.get(cache_key, "zhiyun_my_courses")
     if cached:
-        print(json.dumps(cached, ensure_ascii=False, indent=2))
+        _emit_zhiyun_success(
+            "my_courses",
+            cached,
+            meta={"teacher": teacher_name, "keyword": keyword},
+            source="cache",
+        )
         return
 
     courses = await api.get_my_courses(keyword=keyword, teacher_name=teacher_name)
     cache.set(cache_key, courses, "zhiyun_my_courses")
-    print(json.dumps(courses, ensure_ascii=False, indent=2))
+    _emit_zhiyun_success(
+        "my_courses",
+        courses,
+        meta={"teacher": teacher_name, "keyword": keyword},
+    )
 
 
 def _make_transcript_cache_key(sub_id: str, timestamps: bool, include_translation: bool) -> str:
@@ -787,6 +886,33 @@ async def _load_transcript_cached(api, cache, sub_id: str):
     return transcript
 
 
+async def _resolve_course(api, *, course_name: str = "", teacher_name: str = "", course_id: str = "") -> dict | None:
+    if course_id:
+        return {"course_id": course_id, "title": course_name or "", "teacher": teacher_name or ""}
+
+    recent_courses = await api.get_recent_learning(per_page=20)
+    matching = [
+        course
+        for course in recent_courses
+        if api._course_matches(course, keyword=course_name, teacher_name=teacher_name)
+    ]
+    if not matching:
+        matching = await api.get_my_courses(keyword=course_name, teacher_name=teacher_name)
+    return matching[0] if matching else None
+
+
+def _emit_zhiyun_success(feature: str, data, *, meta: dict | None = None, source: str = "live"):
+    from zju_output import emit_success
+
+    emit_success(
+        platform="zhiyun",
+        feature=feature,
+        data=data,
+        meta=meta,
+        source=source,
+    )
+
+
 async def _cmd_subtitle(
     sub_id: str,
     *,
@@ -794,7 +920,6 @@ async def _cmd_subtitle(
     include_translation: bool = False,
     filter_fillers: bool = True,
 ):
-    import json
     from zju_cache import CacheManager
 
     api = _get_api()
@@ -803,7 +928,17 @@ async def _cmd_subtitle(
     cache_key = _make_transcript_cache_key(sub_id, timestamps, include_translation)
     cached = cache.get(cache_key, "zhiyun_transcript")
     if cached:
-        print(cached if isinstance(cached, str) else json.dumps(cached, ensure_ascii=False))
+        _emit_zhiyun_success(
+            "subtitle_text",
+            {"sub_id": str(sub_id), "text": cached},
+            meta={
+                "sub_id": str(sub_id),
+                "timestamps": timestamps,
+                "include_translation": include_translation,
+                "filter_fillers": filter_fillers,
+            },
+            source="cache",
+        )
         return
 
     transcript = await _load_transcript_cached(api, cache, sub_id)
@@ -815,9 +950,28 @@ async def _cmd_subtitle(
     )
     if text:
         cache.set(cache_key, text, "zhiyun_transcript")
-        print(text)
+        _emit_zhiyun_success(
+            "subtitle_text",
+            {"sub_id": str(sub_id), "text": text},
+            meta={
+                "sub_id": str(sub_id),
+                "timestamps": timestamps,
+                "include_translation": include_translation,
+                "filter_fillers": filter_fillers,
+            },
+        )
     else:
-        print(f"未找到 sub_id={sub_id} 的字幕，可能该视频尚未转录。")
+        _emit_zhiyun_success(
+            "subtitle_text",
+            {"sub_id": str(sub_id), "text": None},
+            meta={
+                "sub_id": str(sub_id),
+                "timestamps": timestamps,
+                "include_translation": include_translation,
+                "filter_fillers": filter_fillers,
+                "message": "未找到字幕，可能该视频尚未转录。",
+            },
+        )
 
 
 async def _cmd_lecture(
@@ -834,26 +988,22 @@ async def _cmd_lecture(
     api = _get_api()
     cache = CacheManager()
 
-    # Step 1: 只走当前账号上下文，不再依赖全站搜索。
-    recent_courses = await api.get_recent_learning(per_page=20)
-    matching = [
-        course
-        for course in recent_courses
-        if api._course_matches(course, keyword=course_name, teacher_name=teacher_name)
-    ]
-    if not matching:
-        matching = await api.get_my_courses(keyword=course_name, teacher_name=teacher_name)
-    if not matching:
-        print(f"未在当前账号的智云课程中找到《{course_name}》。")
-        print("请先确认该课程确实在“我的学习/我的课程”中，而不是依赖全站搜索。")
+    course = await _resolve_course(api, course_name=course_name, teacher_name=teacher_name)
+    if not course:
+        _emit_zhiyun_success(
+            "lecture_text",
+            {"course": course_name, "text": None},
+            meta={"teacher": teacher_name, "message": "未在当前账号课程中找到该课程。"},
+        )
         return
-
-    # Step 2: 获取视频列表
-    course = matching[0]
     videos = await api.get_course_detail(course["course_id"], teacher_name=teacher_name)
 
     if not videos:
-        print(f"课程《{course['title']}》({course['term']}) 没有可用的字幕视频。")
+        _emit_zhiyun_success(
+            "lecture_text",
+            {"course": course.get("title", course_name), "text": None},
+            meta={"teacher": teacher_name, "message": "该课程没有可用的字幕视频。"},
+        )
         return
 
     idx = min(lecture_index, len(videos) - 1)
@@ -869,10 +1019,16 @@ async def _cmd_lecture(
     )
 
     if not text:
-        print(f"课程《{course['title']}》的视频「{target['sub_title']}」暂无可用字幕。")
-        print(f"\n该课程共有 {len(videos)} 个有字幕的视频:")
-        for i, v in enumerate(videos):
-            print(f"  [{i}] {v['sub_title']}")
+        _emit_zhiyun_success(
+            "lecture_text",
+            {
+                "course": course.get("title", course_name),
+                "target_video": target,
+                "text": None,
+                "available_videos": videos,
+            },
+            meta={"teacher": teacher_name, "index": lecture_index, "message": "目标视频暂无可用字幕。"},
+        )
         return
 
     cache.set(
@@ -880,12 +1036,140 @@ async def _cmd_lecture(
         text,
         "zhiyun_transcript",
     )
+    _emit_zhiyun_success(
+        "lecture_text",
+        {
+            "course": {
+                "course_id": course.get("course_id"),
+                "title": course.get("title", course_name),
+                "term": course.get("term", ""),
+            },
+            "video": target,
+            "text": text,
+        },
+        meta={
+            "teacher": teacher_name,
+            "index": lecture_index,
+            "timestamps": timestamps,
+            "include_translation": include_translation,
+            "filter_fillers": filter_fillers,
+        },
+    )
 
-    print(f"课程: {course['title']} ({course['term']})")
-    print(f"讲座: {target['sub_title']}")
-    print(f"教师: {target.get('lecturer_name', teacher_name)}")
-    print("---\n")
-    print(text)
+
+async def _cmd_videos(course_name: str = "", teacher_name: str = "", course_id: str = "", with_all_status: bool = False):
+    from zju_cache import CacheManager
+
+    api = _get_api()
+    cache = CacheManager()
+    course = await _resolve_course(api, course_name=course_name, teacher_name=teacher_name, course_id=course_id)
+    if not course:
+        _emit_zhiyun_success(
+            "course_videos",
+            [],
+            meta={"course": course_name, "teacher": teacher_name, "message": "未找到课程。"},
+        )
+        return
+
+    resolved_course_id = str(course.get("course_id"))
+    cache_key = f"zhiyun_videos_{resolved_course_id}_{teacher_name}_{int(with_all_status)}"
+    cached = cache.get(cache_key, "zhiyun_videos")
+    if cached is not None:
+        _emit_zhiyun_success(
+            "course_videos",
+            cached,
+            meta={"course_id": resolved_course_id, "course": course_name, "teacher": teacher_name},
+            source="cache",
+        )
+        return
+
+    videos = await api.get_course_videos(
+        resolved_course_id,
+        teacher_name=teacher_name,
+        with_subtitles_only=not with_all_status,
+    )
+    cache.set(cache_key, videos, "zhiyun_videos")
+    _emit_zhiyun_success(
+        "course_videos",
+        videos,
+        meta={"course_id": resolved_course_id, "course": course_name, "teacher": teacher_name},
+    )
+
+
+async def _cmd_ppt(
+    *,
+    course_name: str = "",
+    teacher_name: str = "",
+    course_id: str = "",
+    sub_id: str = "",
+    lecture_index: int = 0,
+):
+    from zju_cache import CacheManager
+
+    api = _get_api()
+    cache = CacheManager()
+    course = await _resolve_course(api, course_name=course_name, teacher_name=teacher_name, course_id=course_id)
+    if not course:
+        _emit_zhiyun_success(
+            "ppt_timeline",
+            [],
+            meta={"course": course_name, "teacher": teacher_name, "message": "未找到课程。"},
+        )
+        return
+
+    resolved_course_id = str(course.get("course_id"))
+    resolved_sub_id = str(sub_id) if sub_id else ""
+    if not resolved_sub_id:
+        videos = await api.get_course_videos(resolved_course_id, teacher_name=teacher_name, with_subtitles_only=False)
+        if not videos:
+            _emit_zhiyun_success(
+                "ppt_timeline",
+                [],
+                meta={"course_id": resolved_course_id, "message": "该课程没有可用视频。"},
+            )
+            return
+        target = videos[min(lecture_index, len(videos) - 1)]
+        resolved_sub_id = str(target["sub_id"])
+
+    cache_key = f"zhiyun_ppt_{resolved_course_id}_{resolved_sub_id}"
+    cached = cache.get(cache_key, "zhiyun_ppt")
+    if cached is not None:
+        _emit_zhiyun_success(
+            "ppt_timeline",
+            cached,
+            meta={"course_id": resolved_course_id, "sub_id": resolved_sub_id},
+            source="cache",
+        )
+        return
+
+    timeline = await api.get_ppt_timeline(resolved_course_id, resolved_sub_id)
+    cache.set(cache_key, timeline, "zhiyun_ppt")
+    _emit_zhiyun_success(
+        "ppt_timeline",
+        timeline,
+        meta={"course_id": resolved_course_id, "sub_id": resolved_sub_id},
+    )
+
+
+async def _cmd_transcript(sub_id: str, *, include_translation: bool = False, raw: bool = False):
+    from zju_cache import CacheManager
+
+    api = _get_api()
+    cache = CacheManager()
+    transcript = await _load_transcript_cached(api, cache, sub_id)
+    segments = api._normalize_transcript_segments(transcript, include_translation=include_translation)
+    payload = {
+        "sub_id": str(sub_id),
+        "segments": segments,
+    }
+    if raw:
+        payload["raw"] = transcript
+    _emit_zhiyun_success(
+        "transcript_segments",
+        payload,
+        meta={"sub_id": str(sub_id), "include_translation": include_translation, "raw": raw},
+        source="cache" if transcript is not None else "live",
+    )
 
 
 def main():
@@ -907,11 +1191,29 @@ def main():
     p_mine.add_argument("--teacher", default="", help="教师姓名")
     p_mine.add_argument("--keyword", default="", help="课程关键词")
 
+    p_videos = sub.add_parser("videos", help="获取课程视频元数据")
+    p_videos.add_argument("--course", default="", help="课程名称")
+    p_videos.add_argument("--course-id", default="", help="课程 ID")
+    p_videos.add_argument("--teacher", default="", help="教师姓名")
+    p_videos.add_argument("--with-all-status", action="store_true", help="包含未转字幕视频")
+
+    p_ppt = sub.add_parser("ppt", help="获取 PPT 时间轴")
+    p_ppt.add_argument("--course", default="", help="课程名称")
+    p_ppt.add_argument("--course-id", default="", help="课程 ID")
+    p_ppt.add_argument("--sub-id", default="", help="视频/子课程 ID")
+    p_ppt.add_argument("--teacher", default="", help="教师姓名")
+    p_ppt.add_argument("--index", type=int, default=0, help="视频索引，0=最新")
+
     p_sub = sub.add_parser("subtitle", help="获取指定视频字幕（默认纯文本）")
     p_sub.add_argument("--sub-id", required=True, help="视频/子课程 ID")
     p_sub.add_argument("--timestamps", action="store_true", help="保留时间戳")
     p_sub.add_argument("--include-translation", action="store_true", help="附带翻译文本")
     p_sub.add_argument("--no-filter-fillers", action="store_true", help="不过滤口头语/低信息碎片")
+
+    p_transcript = sub.add_parser("transcript", help="获取字幕原始分段")
+    p_transcript.add_argument("--sub-id", required=True, help="视频/子课程 ID")
+    p_transcript.add_argument("--include-translation", action="store_true", help="附带翻译文本")
+    p_transcript.add_argument("--raw", action="store_true", help="附带原始接口返回 JSON")
 
     p_lec = sub.add_parser("lecture", help="从当前账号课程中获取讲座纯文本")
     p_lec.add_argument("--course", required=True, help="课程名称")
@@ -926,11 +1228,31 @@ def main():
     try:
         if args.command == "search":
             if not args.teacher and not args.keyword:
-                print("错误: 请至少提供 --teacher 或 --keyword", file=sys.stderr)
-                sys.exit(1)
+                from zju_output import emit_error
+
+                emit_error(message="请至少提供 --teacher 或 --keyword", platform="zhiyun", feature="search")
             asyncio.run(_cmd_search(args.teacher, args.keyword))
         elif args.command == "my-courses":
             asyncio.run(_cmd_my_courses(args.teacher, args.keyword))
+        elif args.command == "videos":
+            asyncio.run(
+                _cmd_videos(
+                    args.course,
+                    args.teacher,
+                    args.course_id,
+                    args.with_all_status,
+                )
+            )
+        elif args.command == "ppt":
+            asyncio.run(
+                _cmd_ppt(
+                    course_name=args.course,
+                    teacher_name=args.teacher,
+                    course_id=args.course_id,
+                    sub_id=args.sub_id,
+                    lecture_index=args.index,
+                )
+            )
         elif args.command == "subtitle":
             asyncio.run(
                 _cmd_subtitle(
@@ -938,6 +1260,14 @@ def main():
                     timestamps=args.timestamps,
                     include_translation=args.include_translation,
                     filter_fillers=not args.no_filter_fillers,
+                )
+            )
+        elif args.command == "transcript":
+            asyncio.run(
+                _cmd_transcript(
+                    args.sub_id,
+                    include_translation=args.include_translation,
+                    raw=args.raw,
                 )
             )
         elif args.command == "lecture":
@@ -952,8 +1282,9 @@ def main():
                 )
             )
     except Exception as e:
-        print(f"错误: {e}", file=sys.stderr)
-        sys.exit(1)
+        from zju_output import emit_error
+
+        emit_error(message=str(e) or e.__class__.__name__, platform="zhiyun", feature=args.command)
 
 
 if __name__ == "__main__":

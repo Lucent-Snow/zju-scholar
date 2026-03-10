@@ -15,8 +15,19 @@ TTL_MAP = {
     "major_grades": 6 * 3600,          # 6 hours
     "exams": 12 * 3600,                # 12 hours
     "todos": 1 * 3600,                 # 1 hour
+    "courses_list": 1 * 3600,          # 1 hour
+    "course_detail": 6 * 3600,         # 6 hours
+    "course_modules": 6 * 3600,        # 6 hours
+    "course_activities": 30 * 60,      # 30 minutes
+    "course_classrooms": 30 * 60,      # 30 minutes
+    "activity_detail": 30 * 60,        # 30 minutes
+    "classroom_detail": 30 * 60,       # 30 minutes
+    "coursewares": 30 * 60,            # 30 minutes
+    "resources_list": 15 * 60,         # 15 minutes
     "zhiyun_search": 4 * 3600,         # 4 hours
     "zhiyun_my_courses": 1 * 3600,     # 1 hour
+    "zhiyun_videos": 1 * 3600,         # 1 hour
+    "zhiyun_ppt": 0,                   # permanent
     "zhiyun_transcript": 0,            # permanent (subtitles don't change)
 }
 
