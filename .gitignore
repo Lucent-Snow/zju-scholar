@@ -1,6 +1,7 @@
-# Runtime data (credentials, sessions, cache)
+# Runtime data (credentials, sessions, cache, output)
 data/
 cache/
+output/
 
 # Python
 __pycache__/

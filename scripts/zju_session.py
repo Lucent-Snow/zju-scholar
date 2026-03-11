@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from zju_api import CoursesApi, ZdbkApi
@@ -12,6 +13,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = SKILL_DIR / "data"
 SESSION_FILE = DATA_DIR / "session.json"
 CREDENTIALS_FILE = DATA_DIR / "credentials.json"
+PROFILE_FILE = DATA_DIR / "profile.json"
 
 
 def _read_json(path: Path) -> dict:
@@ -29,6 +31,58 @@ def load_session() -> dict:
 
 def load_credentials() -> dict:
     return _read_json(CREDENTIALS_FILE)
+
+
+def load_profile() -> dict:
+    """加载用户学业档案。返回 {grade, year, semester, label, campus, ...}。"""
+    return _read_json(PROFILE_FILE)
+
+
+def save_profile(profile: dict):
+    """保存用户学业档案。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROFILE_FILE.write_text(
+        json.dumps(profile, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def current_semester() -> tuple[str, str]:
+    """获取当前学期。优先读 profile.json，否则按日期推算。
+
+    返回 (year, semester)。
+    """
+    profile = load_profile()
+    if profile.get("year") and profile.get("semester"):
+        return profile["year"], profile["semester"]
+
+    # fallback: 按日期推算
+    now = datetime.now(timezone(timedelta(hours=8)))
+    month = now.month
+    year = now.year
+
+    if month >= 9:
+        return str(year), "1"
+    elif month <= 1:
+        return str(year - 1), "1"
+    elif 2 <= month <= 6:
+        return str(year - 1), "2"
+    else:
+        return str(year - 1), "3"
+
+
+def semester_label(year: str | None = None, semester: str | None = None) -> str:
+    """生成可读的学期标签，如 '2025-2026 春夏（大二下）'。"""
+    if not year or not semester:
+        year, semester = current_semester()
+    y = int(year)
+    sem_names = {"1": "秋冬", "2": "春夏", "3": "短学期"}
+    label = f"{y}-{y+1} {sem_names.get(semester, semester)}"
+
+    profile = load_profile()
+    if profile.get("year") == year and profile.get("semester") == semester and profile.get("grade"):
+        label += f"（{profile['grade']}）"
+    return label
 
 
 def restore_webvpn(session: dict | None = None):

@@ -54,21 +54,42 @@ python <SKILL>/scripts/zju_login.py --zhiyun-token TOKEN
 
 ## 脚本 2: zju_academic.py — 教务数据查询
 
+教务网(ZDBK)数据：课表、成绩、考试。
+
 ```bash
-# 获取课表
+# 获取当前学期课表（自动推算，推荐）
+python <SKILL>/scripts/zju_academic.py courses
+
+# 获取指定学期课表
 python <SKILL>/scripts/zju_academic.py courses --year 2024 --semester 1
 
-# 获取成绩和 GPA
+# 获取所有成绩和 GPA
 python <SKILL>/scripts/zju_academic.py grades
 
-# 获取考试安排
+# 仅当前学期成绩
+python <SKILL>/scripts/zju_academic.py grades --current
+
+# 指定学期成绩
+python <SKILL>/scripts/zju_academic.py grades --year 2025 --semester 1
+
+# 获取当前学期考试安排（默认）
 python <SKILL>/scripts/zju_academic.py exams
 
-# 获取作业/DDL
-python <SKILL>/scripts/zju_academic.py todos
+# 获取所有考试安排
+python <SKILL>/scripts/zju_academic.py exams --all
 ```
 
+学期自动推算规则（UTC+8）：
+- 9-12月 → 当年秋冬（year=当年, semester=1）
+- 1月 → 上年秋冬（year=去年, semester=1）
+- 2-6月 → 上年春夏（year=去年, semester=2）
+- 7-8月 → 上年短学期（year=去年, semester=3）
+
+不传 --year/--semester 时自动使用当前学期，推荐这种用法。
+
 ## 脚本 3: zju_courses.py — 学在浙大
+
+学在浙大平台数据：课程管理、作业DDL、课件资料、云盘资源。
 
 ```bash
 # 当前课程列表
@@ -144,10 +165,11 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 
 ## 典型对话 → 脚本调用
 
-- "我这学期有什么课？" → `zju_academic.py courses --year 2025 --semester 2`
+- "我这学期有什么课？" → `zju_academic.py courses`（自动推算当前学期）
 - "我的 GPA 怎么样？" → `zju_academic.py grades`
-- "下周有什么考试？" → `zju_academic.py exams`
-- "最近有什么 DDL？" → `zju_academic.py todos`
+- "这学期成绩怎么样？" → `zju_academic.py grades --current`
+- "下周有什么考试？" → `zju_academic.py exams`（默认当前学期）
+- "最近有什么 DDL？" → `zju_courses.py todos`
 - "帮我看这门课的活动和资料" → `zju_courses.py activities --course-id ...` / `zju_courses.py coursewares --course-id ...`
 - "把我云盘里最新的 PDF 列出来" → `zju_courses.py resources --type document`
 - "帮我找张三老师的课" → `zju_zhiyun.py search --teacher 张三`（旁路能力，可能为空）
@@ -156,10 +178,12 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 
 ## 分层约定
 
-- 教务层：`zju_academic.py`
-- 学在浙大课程层：`zju_courses.py`
-- 智云课堂层：`zju_zhiyun.py`
+- 教务层（课表/成绩/考试）：`zju_academic.py`
+- 学在浙大课程层（课程管理/作业DDL/课件/云盘）：`zju_courses.py`
+- 智云课堂层（视频/字幕/PPT）：`zju_zhiyun.py`
 - 公共层：`zju_session.py`、`zju_output.py`、`zju_api.py`、`zju_cache.py`
+
+职责边界：作业/DDL 归学在浙大（`zju_courses.py todos`），教务层只管课表、成绩、考试。
 
 如果用户说“统一入口”，优先理解为这个 skill 统一承接能力，而不是合并成一个脚本。
 新增能力时保持按平台、按功能分类。
@@ -169,7 +193,27 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 所有数据都存储在 skill 文件夹内:
 - `data/credentials.json` — 学号、密码
 - `data/session.json` — 登录后的 session 信息
+- `data/profile.json` — 用户学业档案（年级、当前学期、校区等）
 - `cache/` — 缓存目录（课表、成绩等查询结果）
+- `output/` — 大文本输出目录（字幕、讲座文本等）
+
+### profile.json — 用户学业档案
+
+存储用户当前的学业状态，所有脚本共享。格式：
+
+```json
+{
+  "grade": "大二下",
+  "year": "2025",
+  "semester": "2",
+  "label": "2025-2026 春夏",
+  "campus": "紫金港"
+}
+```
+
+- `year` + `semester` 是课表/成绩/考试的默认学期参数
+- 不传 --year/--semester 时自动读取 profile，profile 也没有则按日期推算
+- 每学期开学时需要更新（手动编辑或通过脚本）
 
 ## 注意事项
 
@@ -182,6 +226,8 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 - `search` 仅作为旁路能力，但现在会自动补齐 `user_id/user_name`，并在关键词无结果时尝试更短的模糊片段
 - 若已知教师名，优先同时传 `--teacher`，结果会明显更准
 - 智云字幕默认输出过滤口头语后的纯文本，适合直接阅读或交给 AI；如需更接近原始分段可显式加 `--no-filter-fillers`
+- 字幕/讲座文本超过 800 字时自动存到 `output/` 目录，JSON 只返回文件路径、字数和前 300 字预览；AI 需要全文时用 read 工具读取文件
+- 短文本（≤800字）仍直接在 JSON 的 `text` 字段返回
 - 校外网络会通过 WebVPN 自动补齐智云 JWT，无需浏览器
 - 学在浙大历史课程查询不要假设后端状态过滤可靠；已结束课程以脚本内学期聚合结果为准
 - 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)

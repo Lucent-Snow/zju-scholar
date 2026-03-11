@@ -9,6 +9,7 @@
 """
 
 from collections import OrderedDict
+from pathlib import Path
 
 import httpx
 import re
@@ -913,6 +914,36 @@ def _emit_zhiyun_success(feature: str, data, *, meta: dict | None = None, source
     )
 
 
+# 超过此字数的文本存文件，不直接输出到 JSON
+_TEXT_FILE_THRESHOLD = 800
+
+SKILL_DIR = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = SKILL_DIR / "output"
+
+
+def _save_text_to_file(text: str, prefix: str, sub_id: str) -> dict:
+    """将大文本存到 output/ 目录，返回文件信息。"""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{prefix}_{sub_id}.txt"
+    filepath = OUTPUT_DIR / filename
+    filepath.write_text(text, encoding="utf-8")
+    return {
+        "file": str(filepath),
+        "filename": filename,
+        "char_count": len(text),
+        "preview": text[:300] + ("..." if len(text) > 300 else ""),
+    }
+
+
+def _text_or_file(text: str, prefix: str, sub_id: str) -> dict:
+    """短文本直接返回，长文本存文件返回路径+摘要。"""
+    if len(text) <= _TEXT_FILE_THRESHOLD:
+        return {"text": text, "char_count": len(text)}
+    info = _save_text_to_file(text, prefix, sub_id)
+    info["text"] = None  # 不在 JSON 里放全文
+    return info
+
+
 async def _cmd_subtitle(
     sub_id: str,
     *,
@@ -928,9 +959,11 @@ async def _cmd_subtitle(
     cache_key = _make_transcript_cache_key(sub_id, timestamps, include_translation)
     cached = cache.get(cache_key, "zhiyun_transcript")
     if cached:
+        text_data = _text_or_file(cached, "subtitle", sub_id)
+        text_data["sub_id"] = str(sub_id)
         _emit_zhiyun_success(
             "subtitle_text",
-            {"sub_id": str(sub_id), "text": cached},
+            text_data,
             meta={
                 "sub_id": str(sub_id),
                 "timestamps": timestamps,
@@ -950,9 +983,11 @@ async def _cmd_subtitle(
     )
     if text:
         cache.set(cache_key, text, "zhiyun_transcript")
+        text_data = _text_or_file(text, "subtitle", sub_id)
+        text_data["sub_id"] = str(sub_id)
         _emit_zhiyun_success(
             "subtitle_text",
-            {"sub_id": str(sub_id), "text": text},
+            text_data,
             meta={
                 "sub_id": str(sub_id),
                 "timestamps": timestamps,
@@ -1036,6 +1071,7 @@ async def _cmd_lecture(
         text,
         "zhiyun_transcript",
     )
+    text_data = _text_or_file(text, "lecture", str(target["sub_id"]))
     _emit_zhiyun_success(
         "lecture_text",
         {
@@ -1045,7 +1081,7 @@ async def _cmd_lecture(
                 "term": course.get("term", ""),
             },
             "video": target,
-            "text": text,
+            **text_data,
         },
         meta={
             "teacher": teacher_name,

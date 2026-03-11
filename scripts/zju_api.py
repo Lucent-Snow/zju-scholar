@@ -384,6 +384,7 @@ class CoursesApi:
         self.session_cookie = session_cookie
         self.timeout = timeout
         self._webvpn = webvpn
+        self._webvpn_warmed = False
 
     def _url(self, url: str) -> str:
         if self._webvpn and self._webvpn.logged_in:
@@ -404,6 +405,17 @@ class CoursesApi:
             return {}
         return {"session": self.session_cookie}
 
+    async def _ensure_webvpn_session(self, client: httpx.AsyncClient):
+        """WebVPN 模式下，确保 courses session 在当前 client 中有效。
+
+        WebVPN 代理内部管理 courses 的 session cookie，但每个新的 httpx client
+        需要先访问一次 /user/index 触发 CAS 重定向链来建立 session。
+        """
+        if not self._webvpn or not self._webvpn.logged_in or self._webvpn_warmed:
+            return
+        await client.get(self._url(f"{COURSES_BASE}/user/index"))
+        self._webvpn_warmed = True
+
     async def _request_json(
         self,
         method: str,
@@ -421,6 +433,7 @@ class CoursesApi:
             request_headers.update(headers)
 
         async with self._make_client() as client:
+            await self._ensure_webvpn_session(client)
             resp = await client.request(
                 method,
                 self._url(f"{COURSES_BASE}{path}"),
@@ -760,6 +773,7 @@ class CoursesApi:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         async with self._make_client(follow_redirects=True) as client:
+            await self._ensure_webvpn_session(client)
             async with client.stream(
                 "GET",
                 self._url(f"{COURSES_BASE}/api/uploads/{resource_id}/blob"),
@@ -812,6 +826,7 @@ class CoursesApi:
         mime = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
 
         async with self._make_client(follow_redirects=True) as client:
+            await self._ensure_webvpn_session(client)
             with open(file_path, "rb") as f:
                 resp = await client.put(
                     upload_url,
