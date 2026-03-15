@@ -7,7 +7,15 @@
 """
 
 import re
+import ssl
 import httpx
+
+
+def _ssl_context_allow_legacy_dh() -> ssl.SSLContext:
+    """返回允许较小 DH 密钥的 SSL 上下文，用于连接仍使用弱 DH 的浙大服务器（学在浙大、智云等）。"""
+    ctx = ssl.create_default_context()
+    ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+    return ctx
 
 
 class ZjuAuth:
@@ -32,12 +40,13 @@ class ZjuAuth:
         return url
 
     def _make_client(self, **kwargs) -> httpx.AsyncClient:
-        """创建 HTTP 客户端，WebVPN 模式下自动注入 cookie。"""
+        """创建 HTTP 客户端，WebVPN 模式下自动注入 cookie。直连时使用允许弱 DH 的 SSL 上下文以兼容学在浙大、智云等服务器。"""
         kwargs.setdefault("follow_redirects", False)
         kwargs.setdefault("timeout", self.timeout)
-        kwargs.setdefault("verify", True)
         if self._webvpn and self._webvpn.logged_in:
+            kwargs.setdefault("verify", True)
             return self._webvpn.make_client(**kwargs)
+        kwargs.setdefault("verify", _ssl_context_allow_legacy_dh())
         return httpx.AsyncClient(**kwargs)
 
     def _convert_redirect(self, location: str) -> str:

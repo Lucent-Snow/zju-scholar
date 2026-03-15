@@ -27,6 +27,7 @@ SESSION_FILE = DATA_DIR / "session.json"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from zju_auth import ZjuAuth
+from zju_console import ensure_utf8_io
 
 
 JWT_RE = re.compile(r"(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)")
@@ -213,6 +214,7 @@ def show_status():
 
 
 def main():
+    ensure_utf8_io()
     parser = argparse.ArgumentParser(description="浙大统一认证登录")
     parser.add_argument("-u", "--username", help="学号")
     parser.add_argument("-p", "--password", help="密码")

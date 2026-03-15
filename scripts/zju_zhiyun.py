@@ -15,6 +15,8 @@ import httpx
 import re
 import json
 
+from zju_auth import _ssl_context_allow_legacy_dh
+
 URL_SEARCH = "https://classroom.zju.edu.cn/pptnote/v1/searchlist"
 URL_DETAIL = "https://yjapi.cmc.zju.edu.cn/courseapi/v3/multi-search/get-course-detail"
 URL_CATALOGUE = "https://yjapi.cmc.zju.edu.cn/courseapi/v2/course/catalogue"
@@ -164,9 +166,10 @@ class ZhiyunApi:
 
     def _make_client(self, **kwargs) -> httpx.AsyncClient:
         kwargs.setdefault("timeout", self.timeout)
-        kwargs.setdefault("verify", True)
         if self._webvpn and self._webvpn.logged_in:
+            kwargs.setdefault("verify", True)
             return self._webvpn.make_client(**kwargs)
+        kwargs.setdefault("verify", _ssl_context_allow_legacy_dh())
         return httpx.AsyncClient(**kwargs)
 
     @staticmethod
@@ -1215,6 +1218,8 @@ def main():
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from zju_console import ensure_utf8_io
+    ensure_utf8_io()
 
     parser = argparse.ArgumentParser(description="智云课堂工具")
     sub = parser.add_subparsers(dest="command", required=True)

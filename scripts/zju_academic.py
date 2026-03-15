@@ -144,6 +144,8 @@ async def cmd_todos():
 
 
 def main():
+    from zju_console import ensure_utf8_io
+    ensure_utf8_io()
     parser = argparse.ArgumentParser(description="浙大教务数据查询")
     sub = parser.add_subparsers(dest="command", required=True)
 
