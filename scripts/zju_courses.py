@@ -284,6 +284,8 @@ async def cmd_resource_upload(file_path: str):
 
 
 def main():
+    from zju_console import ensure_utf8_io
+    ensure_utf8_io()
     parser = argparse.ArgumentParser(description="学在浙大数据查询")
     sub = parser.add_subparsers(dest="command", required=True)
 
