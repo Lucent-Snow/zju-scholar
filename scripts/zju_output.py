@@ -11,6 +11,19 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _ensure_utf8_stream(stream) -> None:
+    encoding = (getattr(stream, "encoding", "") or "").lower()
+    if encoding == "utf-8":
+        return
+    reconfigure = getattr(stream, "reconfigure", None)
+    if not callable(reconfigure):
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (OSError, ValueError):
+        return
+
+
 def make_success_response(
     *,
     platform: str,
@@ -62,6 +75,7 @@ def emit_success(
     meta: dict | None = None,
     source: str = "live",
 ) -> None:
+    _ensure_utf8_stream(sys.stdout)
     print(
         json.dumps(
             make_success_response(
@@ -85,6 +99,7 @@ def emit_error(
     details=None,
     exit_code: int = 1,
 ) -> None:
+    _ensure_utf8_stream(sys.stderr)
     print(
         json.dumps(
             make_error_response(

@@ -2,16 +2,17 @@
 name: zju-scholar
 description: >
   浙大学习助手。当用户需要查询课表、成绩、GPA、考试安排、作业DDL、
-  学在浙大课程/资源、智云课堂课程内容、PPT、视频元数据、课程字幕时使用。
+  学在浙大课程/资源、智云课堂课程内容、PPT、视频元数据、课程字幕、
+  CC98 热门帖、帖子搜索、帖子内容时使用。
   这是统一功能入口，但内部按平台和功能分层：教务网、学在浙大、智云课堂、
-  以及统一会话与统一 JSON 输出层。
+  CC98 论坛，以及统一会话与统一 JSON 输出层。
   触发关键词：课表、成绩、GPA、考试、作业、DDL、学在浙大、课程资料、资源、
-  智云、字幕、PPT、学习内容、我的课程。
+  智云、字幕、PPT、学习内容、我的课程、CC98、论坛、热门帖子、帖子搜索。
 ---
 
 # ZJU Scholar — 浙大学习助手
 
-通过 Python 脚本调用浙大教务网(ZDBK)、学在浙大(Courses)和智云课堂的数据。
+通过 Python 脚本调用浙大教务网(ZDBK)、学在浙大(Courses)、智云课堂和 CC98 论坛的数据。
 所有数据脚本统一输出 JSON，且共享同一份本地 session / WebVPN 状态。
 
 这是一个统一入口 skill，不是单脚本工具。内部按平台和功能拆分，避免把不同来源、
@@ -155,6 +156,36 @@ python <SKILL>/scripts/zju_zhiyun.py search --keyword 数据科学
 python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理心理学
 ```
 
+## 脚本 5: zju_cc98.py — CC98 论坛
+
+使用原则：
+- CC98 仅用于补充热门帖、按需搜索、查看单帖详情，不用于大规模归档或批量爬取
+- 优先小范围请求，`search/posts` 默认控制在必要范围内，避免高频翻页
+- 搜索接口有限流；连续搜索至少间隔 1 秒，不要并发刷接口
+- 如果用户提出“全站抓取”“批量扫版面”“长期同步全论坛”等需求，应明确拒绝并改为按需查询
+
+```bash
+# 登录 CC98（搜索能力需要）
+python <SKILL>/scripts/zju_cc98.py login --username 用户名 --password 密码
+
+# 热门帖子
+python <SKILL>/scripts/zju_cc98.py hot --period weekly
+python <SKILL>/scripts/zju_cc98.py hot --period monthly
+python <SKILL>/scripts/zju_cc98.py hot --period history
+
+# 搜索帖子
+python <SKILL>/scripts/zju_cc98.py search --keyword 常微分 --size 5
+python <SKILL>/scripts/zju_cc98.py search --keyword 常微分 --board-id 68 --size 5
+
+# 帖子详情 / 楼层 / 热门回帖
+python <SKILL>/scripts/zju_cc98.py topic --topic-id 6454407
+python <SKILL>/scripts/zju_cc98.py posts --topic-id 6454407 --from 0 --size 10
+python <SKILL>/scripts/zju_cc98.py hot-posts --topic-id 6454407
+
+# 可选：通过现有 ZJU WebVPN 会话访问
+python <SKILL>/scripts/zju_cc98.py hot --period weekly --webvpn
+```
+
 ## 学期编码
 
 | 参数 | 含义 |
@@ -181,6 +212,7 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 - 教务层（课表/成绩/考试）：`zju_academic.py`
 - 学在浙大课程层（课程管理/作业DDL/课件/云盘）：`zju_courses.py`
 - 智云课堂层（视频/字幕/PPT）：`zju_zhiyun.py`
+- CC98 论坛层（热门帖/搜索/帖子详情）：`zju_cc98.py`
 - 公共层：`zju_session.py`、`zju_output.py`、`zju_api.py`、`zju_cache.py`
 
 职责边界：作业/DDL 归学在浙大（`zju_courses.py todos`），教务层只管课表、成绩、考试。
@@ -193,6 +225,8 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 所有数据都存储在 skill 文件夹内:
 - `data/credentials.json` — 学号、密码
 - `data/session.json` — 登录后的 session 信息
+- `data/cc98_credentials.json` — CC98 用户名、密码
+- `data/cc98_session.json` — CC98 access_token / refresh_token
 - `data/profile.json` — 用户学业档案（年级、当前学期、校区等）
 - `cache/` — 缓存目录（课表、成绩等查询结果）
 - `output/` — 大文本输出目录（字幕、讲座文本等）
@@ -229,5 +263,9 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理
 - 字幕/讲座文本超过 800 字时自动存到 `output/` 目录，JSON 只返回文件路径、字数和前 300 字预览；AI 需要全文时用 read 工具读取文件
 - 短文本（≤800字）仍直接在 JSON 的 `text` 字段返回
 - 校外网络会通过 WebVPN 自动补齐智云 JWT，无需浏览器
+- CC98 热门帖和公开帖子可匿名访问，但搜索需要论坛登录态
+- CC98 服务器容量有限，不要进行大规模爬取、批量翻页抓取或高频轮询；只做当前任务所需的最小查询
+- CC98 搜索接口有限流，1 秒内重复搜索可能返回 `last_search_in_1_seconds`
+- CC98 支持通过现有 `zju_login.py --webvpn` 建立的 ZJU WebVPN 会话访问
 - 学在浙大历史课程查询不要假设后端状态过滤可靠；已结束课程以脚本内学期聚合结果为准
 - 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)

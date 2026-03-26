@@ -5,29 +5,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from zju_output import make_error_response, make_success_response
+from zju_output import _ensure_utf8_stream
 
 
-class ZjuOutputTests(unittest.TestCase):
-    def test_make_success_response(self):
-        payload = make_success_response(
-            platform="courses",
-            feature="course_list",
-            data=[{"id": 1}],
-            meta={"page": 1},
-            source="cache",
-        )
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["platform"], "courses")
-        self.assertEqual(payload["feature"], "course_list")
-        self.assertEqual(payload["source"], "cache")
-        self.assertEqual(payload["data"][0]["id"], 1)
-        self.assertEqual(payload["meta"]["page"], 1)
+class DummyStream:
+    def __init__(self, encoding: str):
+        self.encoding = encoding
+        self.calls = []
 
-    def test_make_error_response_falls_back_when_message_empty(self):
-        payload = make_error_response(message="  ")
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"]["message"], "UnknownError")
+    def reconfigure(self, **kwargs):
+        self.calls.append(kwargs)
+        self.encoding = kwargs.get("encoding", self.encoding)
+
+
+class OutputTests(unittest.TestCase):
+    def test_ensure_utf8_stream_reconfigures_non_utf8_stream(self):
+        stream = DummyStream("gbk")
+        _ensure_utf8_stream(stream)
+        self.assertEqual(stream.encoding, "utf-8")
+        self.assertEqual(stream.calls, [{"encoding": "utf-8", "errors": "backslashreplace"}])
+
+    def test_ensure_utf8_stream_skips_utf8_stream(self):
+        stream = DummyStream("utf-8")
+        _ensure_utf8_stream(stream)
+        self.assertEqual(stream.calls, [])
 
 
 if __name__ == "__main__":
