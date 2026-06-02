@@ -9,9 +9,12 @@
 - lib/utils/gpa_helper.dart          — GPA 计算
 """
 
+from __future__ import annotations
+
 import json
 import mimetypes
 import re
+import ssl
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -19,6 +22,19 @@ import httpx
 
 ZDBK_BASE = "https://zdbk.zju.edu.cn/jwglxt"
 COURSES_BASE = "https://courses.zju.edu.cn"
+
+# courses.zju.edu.cn uses a weak DH key; Python's default SECLEVEL=1 rejects it.
+# Lower to SECLEVEL=0 to allow the handshake.
+# LibreSSL (macOS system Python) does not support the @SECLEVEL=0 directive,
+# but its default cipher list is permissive enough to handshake with courses.zju.edu.cn,
+# so we just skip the call there.
+_COURSES_SSL_CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+_COURSES_SSL_CTX.check_hostname = False
+_COURSES_SSL_CTX.verify_mode = ssl.CERT_NONE
+try:
+    _COURSES_SSL_CTX.set_ciphers("DEFAULT:@SECLEVEL=0")
+except ssl.SSLError:
+    pass  # LibreSSL: relies on default ciphers
 
 # --- Grade conversion maps (from grade.dart) ---
 
@@ -394,10 +410,10 @@ class CoursesApi:
 
     def _make_client(self, **kwargs) -> httpx.AsyncClient:
         kwargs.setdefault("timeout", self.timeout)
-        kwargs.setdefault("verify", True)
         if self._webvpn and self._webvpn.logged_in:
             kwargs.setdefault("follow_redirects", True)
             return self._webvpn.make_client(**kwargs)
+        kwargs.setdefault("verify", _COURSES_SSL_CTX)
         return httpx.AsyncClient(**kwargs)
 
     def _request_cookies(self) -> dict:

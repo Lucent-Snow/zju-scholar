@@ -3,17 +3,20 @@ name: zju-scholar
 description: >
   浙大学习助手。当用户需要查询课表、成绩、GPA、考试安排、作业DDL、
   学在浙大课程/资源、智云课堂课程内容、PPT、视频元数据、课程字幕、
-  CC98 热门帖、帖子搜索、帖子内容时使用。
+  图书馆在借图书/续借/搜索时使用。CC98 论坛功能由独立 CC98-CLI 提供。
   这是统一功能入口，但内部按平台和功能分层：教务网、学在浙大、智云课堂、
-  CC98 论坛，以及统一会话与统一 JSON 输出层。
+  浙大图书馆，以及 CC98 论坛（依赖 cc98-cli）。
   触发关键词：课表、成绩、GPA、考试、作业、DDL、学在浙大、课程资料、资源、
-  智云、字幕、PPT、学习内容、我的课程、CC98、论坛、热门帖子、帖子搜索。
+  智云、字幕、PPT、学习内容、我的课程、图书馆、借书、续借、藏书搜索、
+  CC98、论坛、热门帖子、帖子搜索。
 ---
 
 # ZJU Scholar — 浙大学习助手
 
-通过 Python 脚本调用浙大教务网(ZDBK)、学在浙大(Courses)、智云课堂和 CC98 论坛的数据。
+通过 Python 脚本调用浙大教务网(ZDBK)、学在浙大(Courses)、智云课堂和浙大图书馆的数据。
 所有数据脚本统一输出 JSON，且共享同一份本地 session / WebVPN 状态。
+
+CC98 论坛功能由独立的 [CC98-CLI](https://github.com/Lucent-Snow/CC98-CLI) 提供，本 skill 仅留一个 thin wrapper 入口。
 
 这是一个统一入口 skill，不是单脚本工具。内部按平台和功能拆分，避免把不同来源、
 不同稳定性的接口揉在一起。
@@ -156,35 +159,65 @@ python <SKILL>/scripts/zju_zhiyun.py search --keyword 数据科学
 python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理心理学
 ```
 
-## 脚本 5: zju_cc98.py — CC98 论坛
+## 脚本 5: zju_cc98.py — CC98 论坛（thin wrapper，依赖 cc98-cli）
+
+CC98 论坛功能由独立的 [CC98-CLI](https://github.com/Lucent-Snow/CC98-CLI) 提供（Node.js 20+）。
+`zju_cc98.py` 是 thin wrapper，所有参数透传给 `cc98` CLI，不再维护 Python 实现。
+
+```bash
+# 1. 装 CC98-CLI（一次性）
+npm install -g cc98-cli
+
+# 2. 登录（token 存到 ~/.cc98-cli/）
+cc98 login
+
+# 3. 通过 zju-scholar 入口调用（等价于 cc98 <subcmd>）
+python <SKILL>/scripts/zju_cc98.py me
+python <SKILL>/scripts/zju_cc98.py search "常微分"
+python <SKILL>/scripts/zju_cc98.py topic 6454407
+python <SKILL>/scripts/zju_cc98.py forum boards
+
+# 校外网络先连 WebVPN
+cc98 vpn login
+```
+
+可用子命令与 JSON 输出说明见 [references/cc98-cli.md](references/cc98-cli.md)。
+**不在 SKILL.md 内重复展开**——避免污染 AI 上下文。
 
 使用原则：
 - CC98 仅用于补充热门帖、按需搜索、查看单帖详情，不用于大规模归档或批量爬取
-- 优先小范围请求，`search/posts` 默认控制在必要范围内，避免高频翻页
-- 搜索接口有限流；连续搜索至少间隔 1 秒，不要并发刷接口
-- 如果用户提出“全站抓取”“批量扫版面”“长期同步全论坛”等需求，应明确拒绝并改为按需查询
+- 搜索接口有限流，连续搜索至少间隔 1 秒
+- 公开帖子可匿名访问，但搜索需要登录态
+- CC98-CLI 会自动判别 WebVPN，校外网络先 `cc98 vpn login`
+- 不再提供的功能：按周期拉取热门帖、帖子内热回帖、编辑帖子（如需这些用 CC98 网页版）
+
+## 脚本 6: zju_library.py — 浙大图书馆
 
 ```bash
-# 登录 CC98（搜索能力需要）
-python <SKILL>/scripts/zju_cc98.py login --username 用户名 --password 密码
+# 查看认证状态（iplanet / library_token / opac_cookies / booking_token）
+python <SKILL>/scripts/zju_library.py status
 
-# 热门帖子
-python <SKILL>/scripts/zju_cc98.py hot --period weekly
-python <SKILL>/scripts/zju_cc98.py hot --period monthly
-python <SKILL>/scripts/zju_cc98.py hot --period history
+# 在借图书
+python <SKILL>/scripts/zju_library.py books
 
-# 搜索帖子
-python <SKILL>/scripts/zju_cc98.py search --keyword 常微分 --size 5
-python <SKILL>/scripts/zju_cc98.py search --keyword 常微分 --board-id 68 --size 5
+# 续借
+python <SKILL>/scripts/zju_library.py renew --barcode 1234567
+python <SKILL>/scripts/zju_library.py renew --all
 
-# 帖子详情 / 楼层 / 热门回帖
-python <SKILL>/scripts/zju_cc98.py topic --topic-id 6454407
-python <SKILL>/scripts/zju_cc98.py posts --topic-id 6454407 --from 0 --size 10
-python <SKILL>/scripts/zju_cc98.py hot-posts --topic-id 6454407
+# 搜索图书馆藏书（按书名/作者关键词）
+python <SKILL>/scripts/zju_library.py search "人工智能" --size 10
 
-# 可选：通过现有 ZJU WebVPN 会话访问
-python <SKILL>/scripts/zju_cc98.py hot --period weekly --webvpn
+# 预约图书（需要从 search 拿到 set_number 和 set_entry）
+python <SKILL>/scripts/zju_library.py hold --set-number 166595 --set-entry 000001
+
+# 借阅历史
+python <SKILL>/scripts/zju_library.py history --size 20
 ```
+
+认证依赖：
+- 走 ZJU 统一认证（`iplanet` cookie），由 `zju_login.py` 一并登录写入 `data/session.json`
+- 首次调用 `zju_library.py` 会自动从统一认证派发图书馆 JWT，无需单独登录
+- Session 过期后重新 `python <SKILL>/scripts/zju_login.py`
 
 ## 学期编码
 
@@ -206,30 +239,38 @@ python <SKILL>/scripts/zju_cc98.py hot --period weekly --webvpn
 - "帮我找张三老师的课" → `zju_zhiyun.py search --teacher 张三`（旁路能力，可能为空）
 - "帮我看看上周的数据科学讲了什么" → `zju_zhiyun.py lecture --course 数据科学`
 - "给我这个智云课程的视频和 PPT" → `zju_zhiyun.py videos ...` / `zju_zhiyun.py ppt ...`
+- "我借了哪些书？" / "查一下我的借书" → `zju_library.py books`
+- "帮我续借那本《算法导论》" → `zju_library.py renew --barcode <barcode>`（先用 books 拿 barcode）
+- "图书馆有没有《人工智能：一种现代方法》" → `zju_library.py search "人工智能"`
+- "CC98 热门帖" / "论坛搜索" → `zju_cc98.py forum boards` / `zju_cc98.py search "..."`（具体命令查 references/cc98-cli.md）
 
 ## 分层约定
 
 - 教务层（课表/成绩/考试）：`zju_academic.py`
 - 学在浙大课程层（课程管理/作业DDL/课件/云盘）：`zju_courses.py`
 - 智云课堂层（视频/字幕/PPT）：`zju_zhiyun.py`
-- CC98 论坛层（热门帖/搜索/帖子详情）：`zju_cc98.py`
+- 浙大图书馆层（在借/续借/搜索/预约/历史）：`zju_library.py`
+- CC98 论坛层（依赖 `cc98-cli`，thin wrapper）：`zju_cc98.py`
 - 公共层：`zju_session.py`、`zju_output.py`、`zju_api.py`、`zju_cache.py`
 
 职责边界：作业/DDL 归学在浙大（`zju_courses.py todos`），教务层只管课表、成绩、考试。
 
-如果用户说“统一入口”，优先理解为这个 skill 统一承接能力，而不是合并成一个脚本。
+如果用户说"统一入口"，优先理解为这个 skill 统一承接能力，而不是合并成一个脚本。
 新增能力时保持按平台、按功能分类。
 
 ## 数据存储
 
 所有数据都存储在 skill 文件夹内:
 - `data/credentials.json` — 学号、密码
-- `data/session.json` — 登录后的 session 信息
+- `data/session.json` — 统一认证 session（含 iplanet cookie / zdbk_cookies / courses_session / zhiyun_jwt）
 - `data/cc98_credentials.json` — CC98 用户名、密码
 - `data/cc98_session.json` — CC98 access_token / refresh_token
+- `data/library_session.json` — 图书馆 bor_id / JWT / OPAC cookies
 - `data/profile.json` — 用户学业档案（年级、当前学期、校区等）
 - `cache/` — 缓存目录（课表、成绩等查询结果）
 - `output/` — 大文本输出目录（字幕、讲座文本等）
+
+CC98-CLI 自己的 token 存在 `~/.cc98-cli/`，**不在**本 skill 的 data/ 目录下。
 
 ### profile.json — 用户学业档案
 
@@ -254,18 +295,19 @@ python <SKILL>/scripts/zju_cc98.py hot --period weekly --webvpn
 - Session 会过期，如果查询报错请重新运行 `zju_login.py`
 - 校外网络自动通过 WebVPN 代理，无需额外配置
 - WebVPN 的 ticket cookie 也会过期，过期后重新登录即可
-- `zju_academic.py` / `zju_courses.py` / `zju_zhiyun.py` 都输出统一 JSON，可直接供 AI 继续处理
+- `zju_academic.py` / `zju_courses.py` / `zju_zhiyun.py` / `zju_library.py` 都输出统一 JSON，可直接供 AI 继续处理
 - 统一 JSON 结构为 `ok/platform/feature/source/generated_at/meta/data`
-- 智云默认推荐走“我的课程/最近学习”链路，不依赖全站搜索
+- 智云默认推荐走"我的课程/最近学习"链路，不依赖全站搜索
 - `search` 仅作为旁路能力，但现在会自动补齐 `user_id/user_name`，并在关键词无结果时尝试更短的模糊片段
 - 若已知教师名，优先同时传 `--teacher`，结果会明显更准
 - 智云字幕默认输出过滤口头语后的纯文本，适合直接阅读或交给 AI；如需更接近原始分段可显式加 `--no-filter-fillers`
 - 字幕/讲座文本超过 800 字时自动存到 `output/` 目录，JSON 只返回文件路径、字数和前 300 字预览；AI 需要全文时用 read 工具读取文件
 - 短文本（≤800字）仍直接在 JSON 的 `text` 字段返回
 - 校外网络会通过 WebVPN 自动补齐智云 JWT，无需浏览器
-- CC98 热门帖和公开帖子可匿名访问，但搜索需要论坛登录态
+- 浙大图书馆：`books` / `renew` / `search` / `hold` / `history` 依赖统一认证 iplanet cookie；`renew` 是写操作（其他操作基本是只读）
+- 浙大图书馆 `search` 是 OPAC HTML 抓取，关键词越精确越准；`hold` 需要从 `search` 结果里拿到 `set_number` + `set_entry`
+- CC98 热门帖和公开帖子可匿名访问，但搜索需要论坛登录态（`cc98 login`）
 - CC98 服务器容量有限，不要进行大规模爬取、批量翻页抓取或高频轮询；只做当前任务所需的最小查询
 - CC98 搜索接口有限流，1 秒内重复搜索可能返回 `last_search_in_1_seconds`
-- CC98 支持通过现有 `zju_login.py --webvpn` 建立的 ZJU WebVPN 会话访问
 - 学在浙大历史课程查询不要假设后端状态过滤可靠；已结束课程以脚本内学期聚合结果为准
-- 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)
+- 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)；CC98 额外依赖 `cc98-cli`（`npm install -g cc98-cli`）

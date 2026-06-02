@@ -1,0 +1,8 @@
+# Normalize line endings on checkout
+* text=auto eol=lf
+
+# Mark binaries explicitly
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
