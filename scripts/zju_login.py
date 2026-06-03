@@ -154,10 +154,10 @@ async def _do_login_direct(username: str, password: str, zhiyun_token: str):
     auth = ZjuAuth()
 
     print(f"正在登录统一认证 (学号: {username})...")
-    await auth.sso_login(username, password)
+    iplanet = await auth.sso_login(username, password)
     print("  统一认证登录成功")
 
-    session = {"username": username}
+    session = {"username": username, "iplanet": iplanet}
 
     print("正在登录教务网(ZDBK)...")
     zdbk_cookies = await auth.login_zdbk()

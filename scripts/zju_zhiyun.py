@@ -1044,24 +1044,37 @@ async def _cmd_lecture(
         )
         return
 
-    idx = min(lecture_index, len(videos) - 1)
-    target = videos[idx]
+    # When no explicit lecture_index, try videos in order until finding one with actual transcript.
+    # (Edge case: a video may be marked as subtitled but transcript not yet generated.)
+    max_try = len(videos) if lecture_index > 0 else min(5, len(videos))
+    transcript = None
+    text = ""
+    target = None
+    used_index = lecture_index
 
-    # Step 3: 获取字幕
-    transcript = await _load_transcript_cached(api, cache, str(target["sub_id"]))
-    text = api.format_subtitle_text(
-        transcript,
-        timestamps=timestamps,
-        include_translation=include_translation,
-        filter_fillers=filter_fillers,
-    )
+    for i in range(max_try):
+        idx = lecture_index + i if lecture_index > 0 else i
+        if idx >= len(videos):
+            break
+        candidate = videos[idx]
+        transcript = await _load_transcript_cached(api, cache, str(candidate["sub_id"]))
+        text = api.format_subtitle_text(
+            transcript,
+            timestamps=timestamps,
+            include_translation=include_translation,
+            filter_fillers=filter_fillers,
+        )
+        if text:
+            target = candidate
+            used_index = idx
+            break
 
-    if not text:
+    if not text or not target:
         _emit_zhiyun_success(
             "lecture_text",
             {
                 "course": course.get("title", course_name),
-                "target_video": target,
+                "target_video": videos[min(lecture_index, len(videos) - 1)],
                 "text": None,
                 "available_videos": videos,
             },
@@ -1088,7 +1101,7 @@ async def _cmd_lecture(
         },
         meta={
             "teacher": teacher_name,
-            "index": lecture_index,
+            "index": used_index,
             "timestamps": timestamps,
             "include_translation": include_translation,
             "filter_fillers": filter_fillers,
@@ -1167,12 +1180,44 @@ async def _cmd_ppt(
                 meta={"course_id": resolved_course_id, "message": "该课程没有可用视频。"},
             )
             return
-        target = videos[min(lecture_index, len(videos) - 1)]
-        resolved_sub_id = str(target["sub_id"])
+
+        if lecture_index > 0:
+            # Explicit index: pick the specified lecture
+            target = videos[min(lecture_index, len(videos) - 1)]
+            resolved_sub_id = str(target["sub_id"])
+        else:
+            # Default: try videos in order until finding one with PPT slides.
+            # The newest video may be a future lecture with no PPT yet.
+            resolved_sub_id = ""
+            for v in videos[:5]:
+                candidate_sub = str(v["sub_id"])
+                cache_key = f"zhiyun_ppt_{resolved_course_id}_{candidate_sub}"
+                cached = cache.get(cache_key, "zhiyun_ppt")
+                if cached is not None and len(cached) > 0:
+                    _emit_zhiyun_success(
+                        "ppt_timeline",
+                        cached,
+                        meta={"course_id": resolved_course_id, "sub_id": candidate_sub, "video_title": v.get("title", ""), "source": "auto-select"},
+                        source="cache",
+                    )
+                    return
+                timeline = await api.get_ppt_timeline(resolved_course_id, candidate_sub)
+                if timeline:
+                    resolved_sub_id = candidate_sub
+                    cache.set(cache_key, timeline, "zhiyun_ppt")
+                    _emit_zhiyun_success(
+                        "ppt_timeline",
+                        timeline,
+                        meta={"course_id": resolved_course_id, "sub_id": candidate_sub, "video_title": v.get("title", ""), "source": "auto-select"},
+                    )
+                    return
+            # No PPT found in any recent video; fall back to first video
+            target = videos[0]
+            resolved_sub_id = str(target["sub_id"])
 
     cache_key = f"zhiyun_ppt_{resolved_course_id}_{resolved_sub_id}"
     cached = cache.get(cache_key, "zhiyun_ppt")
-    if cached is not None:
+    if cached is not None and len(cached) > 0:
         _emit_zhiyun_success(
             "ppt_timeline",
             cached,
@@ -1182,7 +1227,8 @@ async def _cmd_ppt(
         return
 
     timeline = await api.get_ppt_timeline(resolved_course_id, resolved_sub_id)
-    cache.set(cache_key, timeline, "zhiyun_ppt")
+    if timeline:
+        cache.set(cache_key, timeline, "zhiyun_ppt")
     _emit_zhiyun_success(
         "ppt_timeline",
         timeline,

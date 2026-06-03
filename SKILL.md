@@ -138,15 +138,23 @@ python <SKILL>/scripts/zju_courses.py resource-upload --file ./notes.pdf
 # 默认推荐：列出当前账号课程
 python <SKILL>/scripts/zju_zhiyun.py my-courses --keyword 数据科学
 
-# 视频元数据 / PPT 时间轴 / 字幕原文
+# 视频元数据（默认只列出有字幕视频，--all 列出全部）
 python <SKILL>/scripts/zju_zhiyun.py videos --course 数据科学
+python <SKILL>/scripts/zju_zhiyun.py videos --course 数据科学 --all
+
+# PPT 时间轴（默认自动选最近一个有 PPT 的视频，--index N 指定第几条）
 python <SKILL>/scripts/zju_zhiyun.py ppt --course 数据科学
+python <SKILL>/scripts/zju_zhiyun.py ppt --course 数据科学 --index 2
+
+# 字幕原文 / 时间轴
 python <SKILL>/scripts/zju_zhiyun.py transcript --sub-id 12345
 
-# 一键获取讲座纯文本（默认过滤口头语，不带时间戳、不带翻译）
+# 一键获取讲座纯文本（默认过滤口头语，不带时间戳、不带翻译；
+# 默认自动选最近一个有字幕文本的视频，--index N 指定第几条）
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --timestamps
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --no-filter-fillers
+python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --index 2
 
 # 获取指定视频字幕（默认过滤口头语后的纯文本）
 python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345
@@ -158,6 +166,13 @@ python <SKILL>/scripts/zju_zhiyun.py search --teacher 张三
 python <SKILL>/scripts/zju_zhiyun.py search --keyword 数据科学
 python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理心理学
 ```
+
+实现说明：
+
+- `ppt` 和 `lecture` 未指定 `--index` 时会依次尝试视频列表，找到**第一个实际有 PPT/字幕内容**的视频（最新视频可能是尚未进行的未来课程）。非空结果才写入缓存。
+- `videos` 默认只列出有字幕的视频（`sub_status=6`），传 `--all` 列出全部。
+- `my-courses` 走最近学习接口，比全站搜索更可靠；`search` 仅作旁路，可能为空。
+- 字幕默认过滤口头语，适合直接阅读或交给 AI；如需原始分段加 `--no-filter-fillers`。
 
 ## 脚本 5: zju_cc98.py — CC98 论坛（thin wrapper，依赖 cc98-cli）
 
@@ -262,7 +277,7 @@ python <SKILL>/scripts/zju_library.py history --size 20
 
 所有数据都存储在 skill 文件夹内:
 - `data/credentials.json` — 学号、密码
-- `data/session.json` — 统一认证 session（含 iplanet cookie / zdbk_cookies / courses_session / zhiyun_jwt）
+- `data/session.json` — 统一认证 session（含 iplanet / zdbk_cookies / courses_session / zhiyun_jwt）
 - `data/cc98_credentials.json` — CC98 用户名、密码
 - `data/cc98_session.json` — CC98 access_token / refresh_token
 - `data/library_session.json` — 图书馆 bor_id / JWT / OPAC cookies
@@ -300,14 +315,15 @@ CC98-CLI 自己的 token 存在 `~/.cc98-cli/`，**不在**本 skill 的 data/ �
 - 智云默认推荐走"我的课程/最近学习"链路，不依赖全站搜索
 - `search` 仅作为旁路能力，但现在会自动补齐 `user_id/user_name`，并在关键词无结果时尝试更短的模糊片段
 - 若已知教师名，优先同时传 `--teacher`，结果会明显更准
+- `ppt` 和 `lecture` 默认不会盲目取最新视频，而是依次尝试找到**实际有 PPT/字幕内容**的视频；最新视频可能是尚未进行的未来课程（无数据）。需要指定某条视频时用 `--index N`。
 - 智云字幕默认输出过滤口头语后的纯文本，适合直接阅读或交给 AI；如需更接近原始分段可显式加 `--no-filter-fillers`
 - 字幕/讲座文本超过 800 字时自动存到 `output/` 目录，JSON 只返回文件路径、字数和前 300 字预览；AI 需要全文时用 read 工具读取文件
 - 短文本（≤800字）仍直接在 JSON 的 `text` 字段返回
 - 校外网络会通过 WebVPN 自动补齐智云 JWT，无需浏览器
-- 浙大图书馆：`books` / `renew` / `search` / `hold` / `history` 依赖统一认证 iplanet cookie；`renew` 是写操作（其他操作基本是只读）
+- 浙大图书馆：`books` / `renew` / `search` / `hold` / `history` 依赖统一认证 iplanet cookie（`zju_login.py` 登录后自动就绪）；`renew` 是写操作（其他基本是只读）
 - 浙大图书馆 `search` 是 OPAC HTML 抓取，关键词越精确越准；`hold` 需要从 `search` 结果里拿到 `set_number` + `set_entry`
 - CC98 热门帖和公开帖子可匿名访问，但搜索需要论坛登录态（`cc98 login`）
 - CC98 服务器容量有限，不要进行大规模爬取、批量翻页抓取或高频轮询；只做当前任务所需的最小查询
 - CC98 搜索接口有限流，1 秒内重复搜索可能返回 `last_search_in_1_seconds`
 - 学在浙大历史课程查询不要假设后端状态过滤可靠；已结束课程以脚本内学期聚合结果为准
-- 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)；CC98 额外依赖 `cc98-cli`（`npm install -g cc98-cli`）
+- 依赖: `httpx[socks]`, `pycryptodome` (见 scripts/requirements.txt)；CC98 额外依赖 `cc98-cli`（`npm install -g cc98-cli`）
