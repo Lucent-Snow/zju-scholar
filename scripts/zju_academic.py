@@ -12,6 +12,8 @@
 需要先通过 zju_login.py 登录。
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import sys

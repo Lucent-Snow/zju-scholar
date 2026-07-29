@@ -7,11 +7,13 @@ import asyncio
 import sys
 from pathlib import Path
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from zju_cache import CacheManager
 from zju_output import emit_error, emit_success
-from zju_session import get_courses_api
+from zju_session import get_courses_api, refresh_session
 
 cache = CacheManager()
 
@@ -351,7 +353,7 @@ def main():
 
     statuses = getattr(args, "statuses", None) or ["ongoing", "notStarted"]
 
-    try:
+    def _run_command():
         if args.command == "course-list":
             asyncio.run(cmd_course_list(args.keyword, args.page, args.page_size, statuses))
         elif args.command == "course-detail":
@@ -376,10 +378,31 @@ def main():
             asyncio.run(cmd_resource_download(args.resource_id, args.output_dir))
         elif args.command == "resource-upload":
             asyncio.run(cmd_resource_upload(args.file))
-    except RuntimeError as e:
-        emit_error(message=str(e) or e.__class__.__name__, platform="courses", feature=args.command)
+
+    def _should_refresh(exc: Exception) -> bool:
+        """Check if the error indicates an expired/missing session."""
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+            return True
+        if isinstance(exc, RuntimeError) and "未登录" in str(exc):
+            return True
+        return False
+
+    try:
+        _run_command()
     except Exception as e:
-        emit_error(message=str(e) or e.__class__.__name__, platform="courses", feature=args.command)
+        if _should_refresh(e):
+            print("Session 已过期，正在自动刷新...", file=sys.stderr)
+            if refresh_session():
+                try:
+                    _run_command()
+                except Exception as retry_e:
+                    emit_error(message=str(retry_e) or retry_e.__class__.__name__, platform="courses", feature=args.command)
+            else:
+                emit_error(message="Session 刷新失败，请手动运行 zju_login.py", platform="courses", feature=args.command)
+        elif isinstance(e, (RuntimeError, httpx.HTTPStatusError)):
+            emit_error(message=str(e) or e.__class__.__name__, platform="courses", feature=args.command)
+        else:
+            emit_error(message=str(e) or e.__class__.__name__, platform="courses", feature=args.command)
 
 
 if __name__ == "__main__":

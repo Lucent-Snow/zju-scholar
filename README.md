@@ -1,36 +1,28 @@
 # ZJU Scholar
 
-浙大学习助手，提供统一认证登录、教务数据查询、学在浙大课程与资源访问、智云课堂内容提取、CC98 论坛信息获取、图书馆查询与续借，并统一输出结构化 JSON。
+浙大学习助手，提供统一认证登录、教务数据查询、学在浙大课程与资源访问、智云课堂内容提取、CC98 论坛信息获取，并统一输出结构化 JSON。
 
-这个仓库为 Skill 形态设计，可用于 Claude Code、Codex 或 openclaw。
+这个仓库为 Skill 形态设计，可用于Claude code 、codex 或 openclaw。
 
 ## 功能
 
 - 教务：课表、成绩、GPA、考试
 - 学在浙大：课程列表、活动、课件、课堂互动、作业 DDL、个人资源
 - 智云课堂：我的课程、视频元数据、PPT 时间轴、字幕原文、讲座纯文本
-- 图书馆：在借图书、续借、藏书搜索、预约、借阅历史
-- CC98：帖子浏览、搜索、回帖、私信、收藏（通过 [cc98-cli](https://github.com/Lucent-Snow/CC98-CLI)）
+- CC98：热门帖子、帖子搜索、帖子详情、帖子楼层、热门回帖
 - 自动识别校内直连与校外 WebVPN
 - 统一 JSON 输出，便于脚本处理或供 AI 继续消费
 
 ## 安装
 
 环境要求：
-- Python 3.10+
-- Node.js 20+（用于 CC98 论坛功能）
 
-安装 Python 依赖：
+- Python 3.10+
+
+安装依赖：
 
 ```bash
 pip install -r scripts/requirements.txt
-```
-
-安装 CC98 CLI：
-
-```bash
-npm install -g cc98-cli
-cc98 login   # 首次登录
 ```
 
 如果作为 Claude Code Skill 使用，可将项目复制或链接到 skills 目录：
@@ -64,12 +56,10 @@ python scripts/zju_academic.py courses
 python scripts/zju_academic.py grades
 python scripts/zju_courses.py todos
 python scripts/zju_zhiyun.py lecture --course 数据科学
-python scripts/zju_library.py search "人工智能"
-python scripts/zju_library.py books
-cc98 search "课程"
+python scripts/zju_cc98.py hot --period weekly
 ```
 
-更完整的脚本说明、参数和典型用法见 [SKILL.md](./SKILL.md)；CC98 全部命令见 [references/cc98-cli.md](./references/cc98-cli.md)。
+更完整的脚本说明、参数和典型用法见 [SKILL.md](./SKILL.md)。
 
 ## 项目结构
 
@@ -88,11 +78,10 @@ zju-scholar/
 ## 注意事项
 
 - Session 会过期，查询失败时先重新运行 `zju_login.py`
-- CC98 搜索依赖论坛登录态，先运行 `cc98 login`（不是 `zju_cc98.py login`，后者只是 `cc98` 命令的 thin wrapper）
-- 凭证和 session 保存在 `data/` 目录下：统一认证用 `credentials.json` / `session.json`，CC98 用 `cc98_credentials.json` / `cc98_session.json`，图书馆用 `library_session.json`
+- CC98 搜索依赖论坛登录态，先运行 `python scripts/zju_cc98.py login --username 用户名 --password 密码`
+- ZJU 凭证和 session 保存在 `data/credentials.json` / `data/session.json`，CC98 凭证和 token 保存在 `data/cc98_credentials.json` / `data/cc98_session.json`
 - CC98 服务器容量有限，请只做按需查询，不要大规模爬取、批量翻页抓取或高频轮询
 - 学在浙大历史课程状态字段并不稳定，已结束课程查询以脚本内部聚合逻辑为准
-- macOS 用户首次运行若报 `No cipher can be selected`，是 LibreSSL 拒绝了 OpenSSL 专属的 `SECLEVEL=0` 指令，`zju_api.py` 已 try/except 跳过该设置
 - 这是非官方项目，与浙江大学及相关平台无官方关联
 
 ## 致谢与参考
@@ -103,7 +92,6 @@ zju-scholar/
 - [ZJU-live-better](https://github.com/5dbwat4/ZJU-live-better)
 - [Learning_at_ZJU_third_client](https://github.com/YangShu233-Snow/Learning_at_ZJU_third_client)
 - [ZJU-New-WebVPN.Csharp](https://github.com/Ginsenvey/ZJU-New-WebVPN.Csharp)
-- [CC98-CLI](https://github.com/Lucent-Snow/CC98-CLI)（CC98 论坛 CLI/TUI，zju-scholar 透传调用）
 
 ## License
 

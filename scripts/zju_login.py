@@ -11,6 +11,8 @@
 登录后将 session 信息保存到 skill 文件夹的 data/ 目录。
 """
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -154,10 +156,10 @@ async def _do_login_direct(username: str, password: str, zhiyun_token: str):
     auth = ZjuAuth()
 
     print(f"正在登录统一认证 (学号: {username})...")
-    iplanet = await auth.sso_login(username, password)
+    await auth.sso_login(username, password)
     print("  统一认证登录成功")
 
-    session = {"username": username, "iplanet": iplanet}
+    session = {"username": username}
 
     print("正在登录教务网(ZDBK)...")
     zdbk_cookies = await auth.login_zdbk()
@@ -265,7 +267,9 @@ def main():
     try:
         asyncio.run(do_login(username, password, zhiyun_token, use_webvpn=args.webvpn))
     except Exception as e:
-        print(f"登录失败: {e}", file=sys.stderr)
+        import traceback
+        print(f"登录失败: {type(e).__name__}: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 

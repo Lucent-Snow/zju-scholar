@@ -1,5 +1,7 @@
 """zju_console.py — 控制台编码兼容（Windows / Claude Code 等环境下避免 UnicodeEncodeError）"""
 
+from __future__ import annotations
+
 import sys
 
 

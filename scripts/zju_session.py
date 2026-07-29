@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -136,3 +137,25 @@ def get_zhiyun_api(session: dict | None = None, credentials: dict | None = None)
         )
 
     return ZhiyunApi(jwt=jwt, student_id=student_id, user_id=user_id, webvpn=webvpn)
+
+
+def refresh_session() -> bool:
+    """Re-run zju_login.py to refresh all sessions. Returns True on success."""
+    import subprocess
+
+    login_script = Path(__file__).resolve().parent / "zju_login.py"
+    try:
+        result = subprocess.run(
+            [sys.executable, str(login_script)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            print("Session 已自动刷新。", file=sys.stderr)
+            return True
+        print(f"Session 刷新失败: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"Session 刷新异常: {e}", file=sys.stderr)
+        return False

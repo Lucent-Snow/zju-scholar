@@ -8,6 +8,8 @@
 参考: https://github.com/Ginsenvey/ZJU-New-WebVPN.Csharp
 """
 
+from __future__ import annotations
+
 import re
 import time
 from urllib.parse import urlparse, quote

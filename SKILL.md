@@ -1,22 +1,14 @@
 ---
 name: zju-scholar
-description: >
-  浙大学习助手。当用户需要查询课表、成绩、GPA、考试安排、作业DDL、
-  学在浙大课程/资源、智云课堂课程内容、PPT、视频元数据、课程字幕、
-  图书馆在借图书/续借/搜索时使用。CC98 论坛功能由独立 CC98-CLI 提供。
-  这是统一功能入口，但内部按平台和功能分层：教务网、学在浙大、智云课堂、
-  浙大图书馆，以及 CC98 论坛（依赖 cc98-cli）。
-  触发关键词：课表、成绩、GPA、考试、作业、DDL、学在浙大、课程资料、资源、
-  智云、字幕、PPT、学习内容、我的课程、图书馆、借书、续借、藏书搜索、
-  CC98、论坛、热门帖子、帖子搜索。
+description: 浙大学习助手，查询课表、成绩、作业、课程资源、智云课堂和 CC98。
+uri: "skill://zju-scholar"
+updated: "2026-07-04T12:23:56+08:00"
+version: 2
 ---
-
 # ZJU Scholar — 浙大学习助手
 
-通过 Python 脚本调用浙大教务网(ZDBK)、学在浙大(Courses)、智云课堂和浙大图书馆的数据。
+通过 Python 脚本调用浙大教务网(ZDBK)、学在浙大(Courses)、智云课堂和 CC98 论坛的数据。
 所有数据脚本统一输出 JSON，且共享同一份本地 session / WebVPN 状态。
-
-CC98 论坛功能由独立的 [CC98-CLI](https://github.com/Lucent-Snow/CC98-CLI) 提供，本 skill 仅留一个 thin wrapper 入口。
 
 这是一个统一入口 skill，不是单脚本工具。内部按平台和功能拆分，避免把不同来源、
 不同稳定性的接口揉在一起。
@@ -138,28 +130,30 @@ python <SKILL>/scripts/zju_courses.py resource-upload --file ./notes.pdf
 # 默认推荐：列出当前账号课程
 python <SKILL>/scripts/zju_zhiyun.py my-courses --keyword 数据科学
 
-# 视频元数据（默认只列出有字幕视频，--all 列出全部）
+# 视频元数据 / PPT 时间轴 / 字幕原文
 python <SKILL>/scripts/zju_zhiyun.py videos --course 数据科学
-python <SKILL>/scripts/zju_zhiyun.py videos --course 数据科学 --all
-
-# PPT 时间轴（默认自动选最近一个有 PPT 的视频，--index N 指定第几条）
 python <SKILL>/scripts/zju_zhiyun.py ppt --course 数据科学
-python <SKILL>/scripts/zju_zhiyun.py ppt --course 数据科学 --index 2
-
-# 字幕原文 / 时间轴
 python <SKILL>/scripts/zju_zhiyun.py transcript --sub-id 12345
 
-# 一键获取讲座纯文本（默认过滤口头语，不带时间戳、不带翻译；
-# 默认自动选最近一个有字幕文本的视频，--index N 指定第几条）
+# 一键获取讲座纯文本（默认过滤口头语，不带时间戳、不带翻译）
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --timestamps
 python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --no-filter-fillers
-python <SKILL>/scripts/zju_zhiyun.py lecture --course 数据科学 --index 2
 
 # 获取指定视频字幕（默认过滤口头语后的纯文本）
 python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345
 python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345 --timestamps
 python <SKILL>/scripts/zju_zhiyun.py subtitle --sub-id 12345 --no-filter-fillers
+
+# 导出课件幻灯片为 PDF（通过 PPT 时间轴 API，无需浏览器）
+python <SKILL>/scripts/zju_zhiyun.py courseware-pdf --course 实验心理学
+python <SKILL>/scripts/zju_zhiyun.py courseware-pdf --course 实验心理学 --all
+python <SKILL>/scripts/zju_zhiyun.py courseware-pdf --course 实验心理学 --sub-id 1912570
+python <SKILL>/scripts/zju_zhiyun.py courseware-pdf --course 实验心理学 --all --output ./pdfs
+
+# 启用感知哈希去重（去除相邻相似帧，默认阈值 15）
+python <SKILL>/scripts/zju_zhiyun.py courseware-pdf --course 实验心理学 --all --dedup
+python <SKILL>/scripts/zju_zhiyun.py courseware-pdf --course 实验心理学 --all --dedup --dedup-threshold 20
 
 # 可选：全站搜索课程（当前平台下可能为空）
 python <SKILL>/scripts/zju_zhiyun.py search --teacher 张三
@@ -167,72 +161,76 @@ python <SKILL>/scripts/zju_zhiyun.py search --keyword 数据科学
 python <SKILL>/scripts/zju_zhiyun.py search --teacher 张智君 --keyword 生理心理学
 ```
 
-实现说明：
-
-- `ppt` 和 `lecture` 未指定 `--index` 时会依次尝试视频列表，找到**第一个实际有 PPT/字幕内容**的视频（最新视频可能是尚未进行的未来课程）。非空结果才写入缓存。
-- `videos` 默认只列出有字幕的视频（`sub_status=6`），传 `--all` 列出全部。
-- `my-courses` 走最近学习接口，比全站搜索更可靠；`search` 仅作旁路，可能为空。
-- 字幕默认过滤口头语，适合直接阅读或交给 AI；如需原始分段加 `--no-filter-fillers`。
-
-## 脚本 5: zju_cc98.py — CC98 论坛（thin wrapper，依赖 cc98-cli）
-
-CC98 论坛功能由独立的 [CC98-CLI](https://github.com/Lucent-Snow/CC98-CLI) 提供（Node.js 20+）。
-`zju_cc98.py` 是 thin wrapper，所有参数透传给 `cc98` CLI，不再维护 Python 实现。
-
-```bash
-# 1. 装 CC98-CLI（一次性）
-npm install -g cc98-cli
-
-# 2. 登录（token 存到 ~/.cc98-cli/）
-cc98 login
-
-# 3. 通过 zju-scholar 入口调用（等价于 cc98 <subcmd>）
-python <SKILL>/scripts/zju_cc98.py me
-python <SKILL>/scripts/zju_cc98.py search "常微分"
-python <SKILL>/scripts/zju_cc98.py topic 6454407
-python <SKILL>/scripts/zju_cc98.py forum boards
-
-# 校外网络先连 WebVPN
-cc98 vpn login
-```
-
-可用子命令与 JSON 输出说明见 [references/cc98-cli.md](references/cc98-cli.md)。
-**不在 SKILL.md 内重复展开**——避免污染 AI 上下文。
+## 脚本 5: zju_cc98.py — CC98 论坛
 
 使用原则：
 - CC98 仅用于补充热门帖、按需搜索、查看单帖详情，不用于大规模归档或批量爬取
-- 搜索接口有限流，连续搜索至少间隔 1 秒
-- 公开帖子可匿名访问，但搜索需要登录态
-- CC98-CLI 会自动判别 WebVPN，校外网络先 `cc98 vpn login`
-- 不再提供的功能：按周期拉取热门帖、帖子内热回帖、编辑帖子（如需这些用 CC98 网页版）
-
-## 脚本 6: zju_library.py — 浙大图书馆
+- 优先小范围请求，`search/posts` 默认控制在必要范围内，避免高频翻页
+- 搜索接口有限流；连续搜索至少间隔 1 秒，不要并发刷接口
+- 如果用户提出全站抓取批量扫版面长期同步全论坛等需求，应明确拒绝并改为按需查询
 
 ```bash
-# 查看认证状态（iplanet / library_token / opac_cookies / booking_token）
-python <SKILL>/scripts/zju_library.py status
+# 登录 CC98
+python <SKILL>/scripts/zju_cc98.py login --username 用户名 --password 密码
 
-# 在借图书
-python <SKILL>/scripts/zju_library.py books
+# 查看登录状态
+python <SKILL>/scripts/zju_cc98.py status
 
-# 续借
-python <SKILL>/scripts/zju_library.py renew --barcode 1234567
-python <SKILL>/scripts/zju_library.py renew --all
+# 每日签到（已签到会提示）
+python <SKILL>/scripts/zju_cc98.py signin
 
-# 搜索图书馆藏书（按书名/作者关键词）
-python <SKILL>/scripts/zju_library.py search "人工智能" --size 10
+# --- 用户 ---
+python <SKILL>/scripts/zju_cc98.py me                          # 当前用户详情
+python <SKILL>/scripts/zju_cc98.py user --user-id 12345        # 其他用户详情
+python <SKILL>/scripts/zju_cc98.py search-user --name LucentSnow  # 按用户名查 ID
+python <SKILL>/scripts/zju_cc98.py my-topics                   # 我的帖子
+python <SKILL>/scripts/zju_cc98.py user-topics --user-id 12345 # 某用户的帖子
+python <SKILL>/scripts/zju_cc98.py browse-history              # 浏览历史
+python <SKILL>/scripts/zju_cc98.py unread                      # 未读消息数
+python <SKILL>/scripts/zju_cc98.py followers                   # 粉丝列表
+python <SKILL>/scripts/zju_cc98.py followees                   # 关注列表
+python <SKILL>/scripts/zju_cc98.py followee-topics             # 好友动态
 
-# 预约图书（需要从 search 拿到 set_number 和 set_entry）
-python <SKILL>/scripts/zju_library.py hold --set-number 166595 --set-entry 000001
+# --- 帖子浏览 ---
+python <SKILL>/scripts/zju_cc98.py hot --period weekly          # 热门帖子
+python <SKILL>/scripts/zju_cc98.py hot --period monthly
+python <SKILL>/scripts/zju_cc98.py hot --period history
+python <SKILL>/scripts/zju_cc98.py new-topics                  # 新帖列表
+python <SKILL>/scripts/zju_cc98.py random-topics               # 随机帖子
+python <SKILL>/scripts/zju_cc98.py search --keyword 常微分 --size 5
+python <SKILL>/scripts/zju_cc98.py search --keyword 常微分 --board-id 68 --size 5
 
-# 借阅历史
-python <SKILL>/scripts/zju_library.py history --size 20
+# --- 帖子详情 ---
+python <SKILL>/scripts/zju_cc98.py topic --topic-id 6454407
+python <SKILL>/scripts/zju_cc98.py posts --topic-id 6454407 --from 0 --size 10
+python <SKILL>/scripts/zju_cc98.py hot-posts --topic-id 6454407
+python <SKILL>/scripts/zju_cc98.py like-status --post-id 123456  # 点赞状态
+
+# --- 收藏 ---
+python <SKILL>/scripts/zju_cc98.py favorites                   # 收藏帖子列表
+python <SKILL>/scripts/zju_cc98.py fav-groups                  # 收藏夹分组
+
+# --- 消息 ---
+python <SKILL>/scripts/zju_cc98.py recent-contacts             # 最近聊天用户
+python <SKILL>/scripts/zju_cc98.py system-notifications        # 系统通知
+
+# --- 版面 ---
+python <SKILL>/scripts/zju_cc98.py all-boards                  # 所有版面
+python <SKILL>/scripts/zju_cc98.py board-info --board-id 2     # 版面信息
+python <SKILL>/scripts/zju_cc98.py board-topics --board-id 2   # 版面帖子
+python <SKILL>/scripts/zju_cc98.py best-topics --board-id 2    # 版面精华帖
+
+# --- 写入操作（未实际验证，谨慎使用） ---
+python <SKILL>/scripts/zju_cc98.py toggle-like --post-id 123456        # 点赞/取消
+python <SKILL>/scripts/zju_cc98.py post-reply --topic-id 6454407 --content 回复内容
+python <SKILL>/scripts/zju_cc98.py create-topic --board-id 2 --title 标题 --content 内容
+python <SKILL>/scripts/zju_cc98.py edit-post --post-id 123456 --content 新内容
+python <SKILL>/scripts/zju_cc98.py add-favorite --topic-id 6454407
+python <SKILL>/scripts/zju_cc98.py chat-history --user-id 12345        # 聊天记录
+
+# 可选：通过现有 ZJU WebVPN 会话访问
+python <SKILL>/scripts/zju_cc98.py hot --period weekly --webvpn
 ```
-
-认证依赖：
-- 走 ZJU 统一认证（`iplanet` cookie），由 `zju_login.py` 一并登录写入 `data/session.json`
-- 首次调用 `zju_library.py` 会自动从统一认证派发图书馆 JWT，无需单独登录
-- Session 过期后重新 `python <SKILL>/scripts/zju_login.py`
 
 ## 学期编码
 
@@ -254,38 +252,31 @@ python <SKILL>/scripts/zju_library.py history --size 20
 - "帮我找张三老师的课" → `zju_zhiyun.py search --teacher 张三`（旁路能力，可能为空）
 - "帮我看看上周的数据科学讲了什么" → `zju_zhiyun.py lecture --course 数据科学`
 - "给我这个智云课程的视频和 PPT" → `zju_zhiyun.py videos ...` / `zju_zhiyun.py ppt ...`
-- "我借了哪些书？" / "查一下我的借书" → `zju_library.py books`
-- "帮我续借那本《算法导论》" → `zju_library.py renew --barcode <barcode>`（先用 books 拿 barcode）
-- "图书馆有没有《人工智能：一种现代方法》" → `zju_library.py search "人工智能"`
-- "CC98 热门帖" / "论坛搜索" → `zju_cc98.py forum boards` / `zju_cc98.py search "..."`（具体命令查 references/cc98-cli.md）
+- "帮我把这门课的课件导出成 PDF" → `zju_zhiyun.py courseware-pdf --course ... --all`
 
 ## 分层约定
 
 - 教务层（课表/成绩/考试）：`zju_academic.py`
 - 学在浙大课程层（课程管理/作业DDL/课件/云盘）：`zju_courses.py`
 - 智云课堂层（视频/字幕/PPT）：`zju_zhiyun.py`
-- 浙大图书馆层（在借/续借/搜索/预约/历史）：`zju_library.py`
-- CC98 论坛层（依赖 `cc98-cli`，thin wrapper）：`zju_cc98.py`
+- CC98 论坛层（热门帖/搜索/帖子详情）：`zju_cc98.py`
 - 公共层：`zju_session.py`、`zju_output.py`、`zju_api.py`、`zju_cache.py`
 
 职责边界：作业/DDL 归学在浙大（`zju_courses.py todos`），教务层只管课表、成绩、考试。
 
-如果用户说"统一入口"，优先理解为这个 skill 统一承接能力，而不是合并成一个脚本。
+如果用户说“统一入口”，优先理解为这个 skill 统一承接能力，而不是合并成一个脚本。
 新增能力时保持按平台、按功能分类。
 
 ## 数据存储
 
 所有数据都存储在 skill 文件夹内:
 - `data/credentials.json` — 学号、密码
-- `data/session.json` — 统一认证 session（含 iplanet / zdbk_cookies / courses_session / zhiyun_jwt）
+- `data/session.json` — 登录后的 session 信息
 - `data/cc98_credentials.json` — CC98 用户名、密码
 - `data/cc98_session.json` — CC98 access_token / refresh_token
-- `data/library_session.json` — 图书馆 bor_id / JWT / OPAC cookies
 - `data/profile.json` — 用户学业档案（年级、当前学期、校区等）
 - `cache/` — 缓存目录（课表、成绩等查询结果）
 - `output/` — 大文本输出目录（字幕、讲座文本等）
-
-CC98-CLI 自己的 token 存在 `~/.cc98-cli/`，**不在**本 skill 的 data/ 目录下。
 
 ### profile.json — 用户学业档案
 
@@ -310,20 +301,31 @@ CC98-CLI 自己的 token 存在 `~/.cc98-cli/`，**不在**本 skill 的 data/ �
 - Session 会过期，如果查询报错请重新运行 `zju_login.py`
 - 校外网络自动通过 WebVPN 代理，无需额外配置
 - WebVPN 的 ticket cookie 也会过期，过期后重新登录即可
-- `zju_academic.py` / `zju_courses.py` / `zju_zhiyun.py` / `zju_library.py` 都输出统一 JSON，可直接供 AI 继续处理
+- `zju_academic.py` / `zju_courses.py` / `zju_zhiyun.py` 都输出统一 JSON，可直接供 AI 继续处理
 - 统一 JSON 结构为 `ok/platform/feature/source/generated_at/meta/data`
-- 智云默认推荐走"我的课程/最近学习"链路，不依赖全站搜索
+- 智云默认推荐走“我的课程/最近学习”链路，不依赖全站搜索
 - `search` 仅作为旁路能力，但现在会自动补齐 `user_id/user_name`，并在关键词无结果时尝试更短的模糊片段
 - 若已知教师名，优先同时传 `--teacher`，结果会明显更准
-- `ppt` 和 `lecture` 默认不会盲目取最新视频，而是依次尝试找到**实际有 PPT/字幕内容**的视频；最新视频可能是尚未进行的未来课程（无数据）。需要指定某条视频时用 `--index N`。
 - 智云字幕默认输出过滤口头语后的纯文本，适合直接阅读或交给 AI；如需更接近原始分段可显式加 `--no-filter-fillers`
 - 字幕/讲座文本超过 800 字时自动存到 `output/` 目录，JSON 只返回文件路径、字数和前 300 字预览；AI 需要全文时用 read 工具读取文件
 - 短文本（≤800字）仍直接在 JSON 的 `text` 字段返回
 - 校外网络会通过 WebVPN 自动补齐智云 JWT，无需浏览器
-- 浙大图书馆：`books` / `renew` / `search` / `hold` / `history` 依赖统一认证 iplanet cookie（`zju_login.py` 登录后自动就绪）；`renew` 是写操作（其他基本是只读）
-- 浙大图书馆 `search` 是 OPAC HTML 抓取，关键词越精确越准；`hold` 需要从 `search` 结果里拿到 `set_number` + `set_entry`
-- CC98 热门帖和公开帖子可匿名访问，但搜索需要论坛登录态（`cc98 login`）
+- CC98 热门帖和公开帖子可匿名访问，但搜索需要论坛登录态
 - CC98 服务器容量有限，不要进行大规模爬取、批量翻页抓取或高频轮询；只做当前任务所需的最小查询
 - CC98 搜索接口有限流，1 秒内重复搜索可能返回 `last_search_in_1_seconds`
+- CC98 支持通过现有 `zju_login.py --webvpn` 建立的 ZJU WebVPN 会话访问
 - 学在浙大历史课程查询不要假设后端状态过滤可靠；已结束课程以脚本内学期聚合结果为准
-- 依赖: `httpx[socks]`, `pycryptodome` (见 scripts/requirements.txt)；CC98 额外依赖 `cc98-cli`（`npm install -g cc98-cli`）
+- 依赖: `httpx`, `pycryptodome` (见 scripts/requirements.txt)
+\n\n### 已知 bug 修复记录（2026-06-30）\n\n**zju_zhiyun.py `get_transcript()` Content-Type bug**：智云课堂 transcript API 返回 `Content-Type: text/html` 即使响应体是有效 JSON（服务器配置问题）。修复：先尝试 JSON 解析，解析失败才检查 Content-Type。不要在 JSON 解析之前过滤 Content-Type。\n\n**zju_login.py 错误处理**：原 `except Exception as e: print(f\"登录失败: {e}\")` 在异常消息为空时无法诊断。修复：添加 `traceback.print_exc()` 输出完整堆栈。\n
+## 已修复的 Bug（2026-06-30）
+
+### zju_zhiyun.py subtitle Content-Type 问题
+- **问题**：智云课堂 transcript API 返回 HTTP 200 + `Content-Type: text/html`，即使响应体是有效 JSON。之前的代码先检查 Content-Type，发现是 HTML 就直接返回 None，导致有效的字幕数据被过滤掉。
+- **修复**：改为先尝试 JSON 解析，只有 JSON 解析失败时才检查 Content-Type 区分认证重定向。
+- **文件**：`scripts/zju_zhiyun.py` 第 632-655 行附近，`get_transcript` 方法
+- **额外修复**：`_cmd_subtitle` 函数在 transcript 返回 None 时增加了更准确的错误提示（区分 JWT 过期 vs 确实没有字幕）
+
+### zju_login.py 错误日志不足
+- **问题**：登录失败时 `except Exception as e` 只打印异常消息，如果消息为空则完全无信息。
+- **修复**：改为 `print(f"登录失败: {type(e).__name__}: {e}")` + `traceback.print_exc()`，输出完整堆栈。
+- **文件**：`scripts/zju_login.py` 第 267-271 行附近

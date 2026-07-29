@@ -6,6 +6,8 @@
 - lib/http/zjuServices/courses.dart — 学在浙大登录
 """
 
+from __future__ import annotations
+
 import re
 import ssl
 import httpx
@@ -14,7 +16,7 @@ import httpx
 def _ssl_context_allow_legacy_dh() -> ssl.SSLContext:
     """返回允许较小 DH 密钥的 SSL 上下文，用于连接仍使用弱 DH 的浙大服务器（学在浙大、智云等）。"""
     ctx = ssl.create_default_context()
-    ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+    ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
     return ctx
 
 

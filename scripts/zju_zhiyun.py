@@ -8,12 +8,16 @@
   python zju_zhiyun.py lecture --course 数据科学        # 一键获取讲座纯文本
 """
 
+from __future__ import annotations
+
 from collections import OrderedDict
 from pathlib import Path
 
 import httpx
+import os
 import re
 import json
+import struct
 
 from zju_auth import _ssl_context_allow_legacy_dh
 
@@ -618,6 +622,7 @@ class ZhiyunApi:
 
     async def get_transcript(self, sub_id: int | str) -> dict | None:
         """获取字幕 JSON 数据。"""
+        import sys
         params = {
             "sub_id": str(sub_id),
             "format": "json",
@@ -625,15 +630,24 @@ class ZhiyunApi:
         headers = self._headers.copy()
         headers["Referer"] = f"https://classroom.zju.edu.cn/livingroom?sub_id={sub_id}"
 
+        actual_url = self._url(URL_TRANS)
         async with self._make_client() as client:
-            resp = await client.get(self._url(URL_TRANS), headers=headers, params=params)
+            resp = await client.get(actual_url, headers=headers, params=params)
 
         if resp.status_code != 200:
+            print(f"[zhiyun] transcript API HTTP {resp.status_code} for sub_id={sub_id}", file=sys.stderr)
             return None
 
+        # 先尝试 JSON 解析（不管 Content-Type 是什么）
         try:
             data = resp.json()
         except Exception:
+            # JSON 解析失败，检查是否为认证重定向（真正的 HTML 登录页）
+            ct = resp.headers.get("content-type", "")
+            if "text/html" in ct:
+                print(f"[zhiyun] transcript API returned HTML login page for sub_id={sub_id} (JWT expired?)", file=sys.stderr)
+            else:
+                print(f"[zhiyun] transcript API non-JSON response for sub_id={sub_id}, ct={ct}", file=sys.stderr)
             return None
 
         # Check for valid transcript data
@@ -643,6 +657,9 @@ class ZhiyunApi:
             if "list" in data["data"] and data["data"]["list"]:
                 return data
 
+        # 没有找到字幕数据——打印响应以便调试
+        print(f"[zhiyun] transcript API returned 200 but no transcript data for sub_id={sub_id}", file=sys.stderr)
+        print(f"[zhiyun] response keys: {list(data.keys())}", file=sys.stderr)
         return None
 
     @staticmethod
@@ -978,6 +995,30 @@ async def _cmd_subtitle(
         return
 
     transcript = await _load_transcript_cached(api, cache, sub_id)
+    if transcript is None:
+        # API 调用失败（网络错误、认证过期、或确实没有字幕数据）
+        import sys
+        from zju_session import load_session
+        _sess = load_session()
+        _jwt = _sess.get("zhiyun_jwt")
+        if not _jwt:
+            msg = "智云课堂 JWT 未设置或已过期，请运行 zju_login.py 重新登录。"
+        else:
+            msg = "未找到字幕。可能原因：1) 智云 JWT 已过期，请运行 zju_login.py 重新登录智云课堂 2) 该视频尚未转录。详细错误见 stderr。"
+        print(f"[zhiyun] get_transcript returned None for sub_id={sub_id}. {msg}", file=sys.stderr)
+        _emit_zhiyun_success(
+            "subtitle_text",
+            {"sub_id": str(sub_id), "text": None},
+            meta={
+                "sub_id": str(sub_id),
+                "timestamps": timestamps,
+                "include_translation": include_translation,
+                "filter_fillers": filter_fillers,
+                "message": msg,
+            },
+        )
+        return
+
     text = api.format_subtitle_text(
         transcript,
         timestamps=timestamps,
@@ -1007,7 +1048,7 @@ async def _cmd_subtitle(
                 "timestamps": timestamps,
                 "include_translation": include_translation,
                 "filter_fillers": filter_fillers,
-                "message": "未找到字幕，可能该视频尚未转录。",
+                "message": "字幕数据存在但格式化后为空，可能是字幕内容异常。",
             },
         )
 
@@ -1044,37 +1085,24 @@ async def _cmd_lecture(
         )
         return
 
-    # When no explicit lecture_index, try videos in order until finding one with actual transcript.
-    # (Edge case: a video may be marked as subtitled but transcript not yet generated.)
-    max_try = len(videos) if lecture_index > 0 else min(5, len(videos))
-    transcript = None
-    text = ""
-    target = None
-    used_index = lecture_index
+    idx = min(lecture_index, len(videos) - 1)
+    target = videos[idx]
 
-    for i in range(max_try):
-        idx = lecture_index + i if lecture_index > 0 else i
-        if idx >= len(videos):
-            break
-        candidate = videos[idx]
-        transcript = await _load_transcript_cached(api, cache, str(candidate["sub_id"]))
-        text = api.format_subtitle_text(
-            transcript,
-            timestamps=timestamps,
-            include_translation=include_translation,
-            filter_fillers=filter_fillers,
-        )
-        if text:
-            target = candidate
-            used_index = idx
-            break
+    # Step 3: 获取字幕
+    transcript = await _load_transcript_cached(api, cache, str(target["sub_id"]))
+    text = api.format_subtitle_text(
+        transcript,
+        timestamps=timestamps,
+        include_translation=include_translation,
+        filter_fillers=filter_fillers,
+    )
 
-    if not text or not target:
+    if not text:
         _emit_zhiyun_success(
             "lecture_text",
             {
                 "course": course.get("title", course_name),
-                "target_video": videos[min(lecture_index, len(videos) - 1)],
+                "target_video": target,
                 "text": None,
                 "available_videos": videos,
             },
@@ -1101,7 +1129,7 @@ async def _cmd_lecture(
         },
         meta={
             "teacher": teacher_name,
-            "index": used_index,
+            "index": lecture_index,
             "timestamps": timestamps,
             "include_translation": include_translation,
             "filter_fillers": filter_fillers,
@@ -1180,44 +1208,12 @@ async def _cmd_ppt(
                 meta={"course_id": resolved_course_id, "message": "该课程没有可用视频。"},
             )
             return
-
-        if lecture_index > 0:
-            # Explicit index: pick the specified lecture
-            target = videos[min(lecture_index, len(videos) - 1)]
-            resolved_sub_id = str(target["sub_id"])
-        else:
-            # Default: try videos in order until finding one with PPT slides.
-            # The newest video may be a future lecture with no PPT yet.
-            resolved_sub_id = ""
-            for v in videos[:5]:
-                candidate_sub = str(v["sub_id"])
-                cache_key = f"zhiyun_ppt_{resolved_course_id}_{candidate_sub}"
-                cached = cache.get(cache_key, "zhiyun_ppt")
-                if cached is not None and len(cached) > 0:
-                    _emit_zhiyun_success(
-                        "ppt_timeline",
-                        cached,
-                        meta={"course_id": resolved_course_id, "sub_id": candidate_sub, "video_title": v.get("title", ""), "source": "auto-select"},
-                        source="cache",
-                    )
-                    return
-                timeline = await api.get_ppt_timeline(resolved_course_id, candidate_sub)
-                if timeline:
-                    resolved_sub_id = candidate_sub
-                    cache.set(cache_key, timeline, "zhiyun_ppt")
-                    _emit_zhiyun_success(
-                        "ppt_timeline",
-                        timeline,
-                        meta={"course_id": resolved_course_id, "sub_id": candidate_sub, "video_title": v.get("title", ""), "source": "auto-select"},
-                    )
-                    return
-            # No PPT found in any recent video; fall back to first video
-            target = videos[0]
-            resolved_sub_id = str(target["sub_id"])
+        target = videos[min(lecture_index, len(videos) - 1)]
+        resolved_sub_id = str(target["sub_id"])
 
     cache_key = f"zhiyun_ppt_{resolved_course_id}_{resolved_sub_id}"
     cached = cache.get(cache_key, "zhiyun_ppt")
-    if cached is not None and len(cached) > 0:
+    if cached is not None:
         _emit_zhiyun_success(
             "ppt_timeline",
             cached,
@@ -1227,13 +1223,208 @@ async def _cmd_ppt(
         return
 
     timeline = await api.get_ppt_timeline(resolved_course_id, resolved_sub_id)
-    if timeline:
-        cache.set(cache_key, timeline, "zhiyun_ppt")
+    cache.set(cache_key, timeline, "zhiyun_ppt")
     _emit_zhiyun_success(
         "ppt_timeline",
         timeline,
         meta={"course_id": resolved_course_id, "sub_id": resolved_sub_id},
     )
+
+
+async def _cmd_courseware_pdf(
+    *,
+    course_name: str = "",
+    teacher_name: str = "",
+    course_id: str = "",
+    sub_id: str = "",
+    lecture_index: int = 0,
+    output: str = "",
+    all_lectures: bool = False,
+    dedup: bool = False,
+    dedup_threshold: int = 15,
+):
+    """Export lecture PPT slides as PDF by fetching images from the PPT timeline API."""
+    import struct
+    import tempfile
+    import urllib.request
+    import os
+    from pathlib import Path
+
+    api = _get_api()
+    course = await _resolve_course(api, course_name=course_name, teacher_name=teacher_name, course_id=course_id)
+    if not course:
+        _emit_zhiyun_success("courseware_pdf", {}, meta={"message": "未找到课程。"})
+        return
+
+    resolved_course_id = str(course.get("course_id"))
+
+    # Determine which lectures to process
+    targets = []
+    if all_lectures:
+        videos = await api.get_course_videos(resolved_course_id, teacher_name=teacher_name, with_subtitles_only=False)
+        if not videos:
+            _emit_zhiyun_success("courseware_pdf", {}, meta={"message": "该课程没有可用视频。"})
+            return
+        targets = videos
+    else:
+        resolved_sub_id = str(sub_id) if sub_id else ""
+        if not resolved_sub_id:
+            videos = await api.get_course_videos(resolved_course_id, teacher_name=teacher_name, with_subtitles_only=False)
+            if not videos:
+                _emit_zhiyun_success("courseware_pdf", {}, meta={"message": "该课程没有可用视频。"})
+                return
+            target = videos[min(lecture_index, len(videos) - 1)]
+            resolved_sub_id = str(target["sub_id"])
+            targets = [target]
+        else:
+            targets = [{"sub_id": resolved_sub_id, "sub_title": ""}]
+
+    out_dir = Path(output) if output else Path.cwd() / "courseware_pdfs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    for t in targets:
+        sid = str(t["sub_id"])
+        title = t.get("sub_title", "").replace("/", "-").replace(":", "-")
+        timeline = await api.get_ppt_timeline(resolved_course_id, sid)
+        if not timeline:
+            results.append({"sub_id": sid, "slides": 0, "status": "no_slides"})
+            continue
+
+        # Download images to temp dir
+        tmpdir = tempfile.mkdtemp()
+        img_files = []
+        for slide in timeline:
+            try:
+                resp = urllib.request.urlopen(urllib.request.Request(slide["image_url"]), timeout=30)
+                path = os.path.join(tmpdir, f"s{len(img_files):04d}.jpg")
+                with open(path, "wb") as f:
+                    f.write(resp.read())
+                img_files.append(path)
+            except Exception:
+                continue
+
+        if not img_files:
+            results.append({"sub_id": sid, "slides": 0, "status": "download_failed"})
+            os.rmdir(tmpdir)
+            continue
+
+        # Dedup adjacent similar frames using perceptual hashing
+        original_count = len(img_files)
+        if dedup and len(img_files) > 1:
+            try:
+                from PIL import Image
+                import imagehash
+
+                keep = [img_files[0]]
+                last_hash = imagehash.phash(Image.open(img_files[0]), hash_size=16)
+                for img_path in img_files[1:]:
+                    h = imagehash.phash(Image.open(img_path), hash_size=16)
+                    if h - last_hash > dedup_threshold:
+                        keep.append(img_path)
+                        last_hash = h
+                    else:
+                        os.remove(img_path)
+                removed = img_files[len(keep):]
+                img_files = keep
+            except ImportError:
+                pass  # imagehash not installed, skip dedup
+
+        # Generate PDF
+        fname = f"{sid}_{title}.pdf" if title else f"{sid}.pdf"
+        pdf_path = out_dir / fname
+        _images_to_pdf(img_files, str(pdf_path))
+        pdf_size = pdf_path.stat().st_size
+
+        # Cleanup temp files
+        for p in img_files:
+            os.remove(p)
+        os.rmdir(tmpdir)
+
+        results.append({
+            "sub_id": sid,
+            "title": title,
+            "slides": len(img_files),
+            "original_slides": original_count,
+            "pdf_path": str(pdf_path),
+            "pdf_size": pdf_size,
+            "status": "ok",
+        })
+
+    _emit_zhiyun_success(
+        "courseware_pdf",
+        results,
+        meta={"course_id": resolved_course_id, "output_dir": str(out_dir)},
+    )
+
+
+def _images_to_pdf(img_files: list[str], output_path: str):
+    """Combine JPEG images into a PDF without external dependencies."""
+
+    def _jpeg_size(data: bytes):
+        from io import BytesIO
+
+        buf = BytesIO(data)
+        buf.read(2)  # SOI
+        while True:
+            marker = buf.read(2)
+            if len(marker) < 2 or marker[0] != 0xFF:
+                return 0, 0
+            if marker[1] in (0xC0, 0xC2):
+                buf.read(3)
+                h = struct.unpack(">H", buf.read(2))[0]
+                w = struct.unpack(">H", buf.read(2))[0]
+                return w, h
+            length = struct.unpack(">H", buf.read(2))[0]
+            buf.read(length - 2)
+
+    PAGE_W, PAGE_H = 612, 792
+    pdf = b"%PDF-1.4\n"
+    offsets = []
+
+    # obj 1: Catalog
+    offsets.append(len(pdf))
+    pdf += b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+
+    # obj 2: Pages
+    offsets.append(len(pdf))
+    n = len(img_files)
+    kids = " ".join(f"{3 + i * 2} 0 R" for i in range(n))
+    pdf += f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {n} >>\nendobj\n".encode()
+
+    for i, img_path in enumerate(img_files):
+        with open(img_path, "rb") as f:
+            img_data = f.read()
+        w, h = _jpeg_size(img_data)
+        if w == 0:
+            w, h = 1280, 720
+        scale = min(PAGE_W / w, PAGE_H / h)
+        dw, dh = w * scale, h * scale
+        x, y = (PAGE_W - dw) / 2, (PAGE_H - dh) / 2
+
+        page_obj = 3 + i * 2
+        img_obj = page_obj + 1
+        content = f"q {dw:.2f} 0 0 {dh:.2f} {x:.2f} {y:.2f} cm /Img{i} Do Q".encode()
+
+        offsets.append(len(pdf))
+        pdf += f"{page_obj} 0 obj\n<< /Length {len(content)} >>\nstream\n".encode() + content + b"\nendstream\nendobj\n"
+
+        offsets.append(len(pdf))
+        pdf += (
+            f"{img_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} "
+            f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {len(img_data)} >>\nstream\n"
+        ).encode() + img_data + b"\nendstream\nendobj\n"
+
+    xref_pos = len(pdf)
+    total_objs = 3 + n * 2
+    pdf += f"xref\n0 {total_objs}\n".encode()
+    pdf += b"0000000000 65535 f \n"
+    for off in offsets:
+        pdf += f"{off:010d} 00000 n \n".encode()
+    pdf += f"trailer\n<< /Size {total_objs} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode()
+
+    with open(output_path, "wb") as f:
+        f.write(pdf)
 
 
 async def _cmd_transcript(sub_id: str, *, include_translation: bool = False, raw: bool = False):
@@ -1302,6 +1493,17 @@ def main():
     p_transcript.add_argument("--include-translation", action="store_true", help="附带翻译文本")
     p_transcript.add_argument("--raw", action="store_true", help="附带原始接口返回 JSON")
 
+    p_cpdf = sub.add_parser("courseware-pdf", help="导出课件幻灯片为 PDF")
+    p_cpdf.add_argument("--course", default="", help="课程名称")
+    p_cpdf.add_argument("--course-id", default="", help="课程 ID")
+    p_cpdf.add_argument("--sub-id", default="", help="视频/子课程 ID")
+    p_cpdf.add_argument("--teacher", default="", help="教师姓名")
+    p_cpdf.add_argument("--index", type=int, default=0, help="视频索引，0=最新")
+    p_cpdf.add_argument("--all", action="store_true", help="导出该课程全部视频的课件")
+    p_cpdf.add_argument("--output", default="", help="输出目录")
+    p_cpdf.add_argument("--dedup", action="store_true", help="对相邻相似帧进行感知哈希去重")
+    p_cpdf.add_argument("--dedup-threshold", type=int, default=15, help="哈希距离阈值，越小越严格（默认15）")
+
     p_lec = sub.add_parser("lecture", help="从当前账号课程中获取讲座纯文本")
     p_lec.add_argument("--course", required=True, help="课程名称")
     p_lec.add_argument("--teacher", default="", help="教师姓名（可选）")
@@ -1328,6 +1530,20 @@ def main():
                     args.teacher,
                     args.course_id,
                     args.with_all_status,
+                )
+            )
+        elif args.command == "courseware-pdf":
+            asyncio.run(
+                _cmd_courseware_pdf(
+                    course_name=args.course,
+                    teacher_name=args.teacher,
+                    course_id=args.course_id,
+                    sub_id=args.sub_id,
+                    lecture_index=args.index,
+                    output=args.output,
+                    all_lectures=args.all,
+                    dedup=args.dedup,
+                    dedup_threshold=args.dedup_threshold,
                 )
             )
         elif args.command == "ppt":

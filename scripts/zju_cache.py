@@ -1,5 +1,7 @@
 """zju_cache.py — 本地 JSON 缓存管理"""
 
+from __future__ import annotations
+
 import json
 import time
 import hashlib
